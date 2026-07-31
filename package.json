@@ -1,0 +1,21 @@
+{
+  "name": "@spuklab/spk-alchemy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Spk_Alchemy \u2014 SpukLab Knowledge Graph foundation vertical slice",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "migrate": "node --experimental-strip-types --no-warnings src/cli/main.ts migrate",
+    "demo": "node --experimental-strip-types --no-warnings src/cli/main.ts demo",
+    "seed": "node --experimental-strip-types --no-warnings src/cli/main.ts seed",
+    "queries": "node --experimental-strip-types --no-warnings src/cli/main.ts queries",
+    "audit": "node --experimental-strip-types --no-warnings src/cli/main.ts audit",
+    "stats": "node --experimental-strip-types --no-warnings src/cli/main.ts stats",
+    "test": "node --experimental-strip-types --no-warnings --test tests/conformance/*.test.ts tests/architecture/*.test.ts tests/integration/*.test.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
