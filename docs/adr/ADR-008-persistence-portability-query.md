@@ -1,6 +1,14 @@
-# ADR-008 — Persistence, portability and query model
+# Persistence, portability and query model — project implementation reference
 
-**Status:** ACTIVE (approved at architecture review, implemented in this slice)
+**Normative authority:** `SpukLab/spuklab-canon`, `05-decisions/ADR-009-Persistence-Portability-and-Query-Model.md`
+
+**Status of this document:** project-level implementation reference. It is **not** a normative Architectural Decision Record and claims no independent architectural authority.
+
+The cross-domain decision is recorded in the Governance Canon as **ADR-009**. This file documents how that decision was realised in the Spk_Alchemy vertical slice. Where the two disagree, ADR-009 governs; the disagreement is a defect in this file.
+
+Note on the previous filename: this document was drafted during the foundation review as "ADR-008" under conversational numbering. The Canon uses its own continuous documentary sequence, in which this decision is ADR-009. The filename is retained to preserve commit history; the identifier above is authoritative.
+
+Note on `canon`: every occurrence of `canon` in this repository — in queries, stages and tests — refers to the **Epistemic Canon**, the Knowledge Graph epistemic stage. It never refers to the Governance Canon repository.
 
 ## Context
 

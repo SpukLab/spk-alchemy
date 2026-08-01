@@ -68,6 +68,14 @@ npm test           # conformance + architectural + integration tests
 The canonical core never imports Node, the filesystem, SQL or a storage engine.
 That is enforced by a test, not by convention.
 
+## Governing authority
+
+The normative architecture lives in the Governance Canon repository
+`SpukLab/spuklab-canon`, in `05-decisions/` (ADR-001 through ADR-009). This
+repository is an implementation of those decisions and claims no independent
+architectural authority. `docs/adr/` holds a project-level implementation
+reference, not a normative ADR.
+
 Structural primitives: **Entity, Relationship, Knowledge, Transition, Agent**.
 Research Intent, Canonical Grouping and Published Artifact are canonical *types*
 built from those primitives, never additional root structures. Canon is a query

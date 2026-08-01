@@ -107,3 +107,20 @@ path. Declared rather than disguised.
   `SEARCH ... USING PRIMARY KEY`, with no `SCAN` on any interactive path.
 - Integrity audit clean: 0 dangling relationships, 0 orphan knowledge,
   0 materials with missing content, 0 unreferenced blobs.
+
+## F-12 — Governance Canon authority and ADR renumbering
+
+The foundation review numbered decisions conversationally; the Governance Canon
+(`SpukLab/spuklab-canon`) uses its own continuous documentary sequence. The
+persistence decision is **ADR-009** there, and this repository's
+`docs/adr/ADR-008-persistence-portability-query.md` is a project-level
+implementation reference rather than a normative ADR. Its header now states that
+explicitly and no longer claims `ACTIVE` status, which only the Governance Canon
+can confer.
+
+This findings document is **project evidence**, not Governance Canon. It records
+what implementation revealed; it does not establish rules.
+
+Terminology: every occurrence of `canon` in this repository is the **Epistemic
+Canon** — the Knowledge Graph epistemic stage. No code change was required, since
+the term was never used here to mean the governance repository.
