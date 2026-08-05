@@ -14,7 +14,14 @@
     "queries": "node --experimental-strip-types --no-warnings src/cli/main.ts queries",
     "audit": "node --experimental-strip-types --no-warnings src/cli/main.ts audit",
     "stats": "node --experimental-strip-types --no-warnings src/cli/main.ts stats",
-    "test": "node --experimental-strip-types --no-warnings --test tests/conformance/*.test.ts tests/architecture/*.test.ts tests/integration/*.test.ts"
+    "test": "node --experimental-strip-types --no-warnings --test tests/conformance/*.test.ts tests/architecture/*.test.ts tests/integration/*.test.ts",
+    "explore": "node --experimental-strip-types --no-warnings src/cli/main.ts explore",
+    "compare": "node --experimental-strip-types --no-warnings src/cli/main.ts compare",
+    "retain": "node --experimental-strip-types --no-warnings src/cli/main.ts retain-preview",
+    "discard": "node --experimental-strip-types --no-warnings src/cli/main.ts discard-preview",
+    "promote": "node --experimental-strip-types --no-warnings src/cli/main.ts promote",
+    "reject": "node --experimental-strip-types --no-warnings src/cli/main.ts reject",
+    "corpus": "node --experimental-strip-types --no-warnings src/cli/main.ts corpus"
   },
   "dependencies": {},
   "devDependencies": {}

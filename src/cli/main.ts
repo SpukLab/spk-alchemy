@@ -5,6 +5,10 @@ import { ANALYZER_V1, ANALYZER_V2 } from '../audio/analyzer.ts';
 import { LIFECYCLE } from '../domain/alchemy/vocabulary.ts';
 import { KNOWLEDGE_KIND } from '../domain/alchemy/vocabulary.ts';
 import { COLLECTIONS } from '../core/primitives.ts';
+import { FRAGMENT_EXPLORATION_V1, configurationById } from '../domain/alchemy/research-configuration.ts';
+import { exportPreviewSet, readManifest, previewFromManifest } from './exploration-cli.ts';
+import { ComparisonGroup } from '../domain/alchemy/exploration.ts';
+import { buildEvaluationCorpus } from './evaluation-corpus.ts';
 
 const ROOT = process.env.SPK_DATA_ROOT ?? '.data';
 const log = (...a: unknown[]): void => { console.log(...a); };
@@ -220,10 +224,146 @@ async function cmdAudit(): Promise<void> {
   await lab.close();
 }
 
+function flag(name: string, fallback?: string): string {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1]!;
+  if (fallback !== undefined) return fallback;
+  throw new Error(`missing required flag --${name}`);
+}
+
+async function firstPromotedMaterial(lab: Awaited<ReturnType<typeof openLab>>): Promise<string> {
+  const inv = await lab.queries.promotedMaterials(undefined, 1);
+  if (inv.items.length === 0) throw new Error('no promoted material; run seed first');
+  return inv.items[0]!.id;
+}
+
+async function ensureIntent(lab: Awaited<ReturnType<typeof openLab>>, agentId: string): Promise<string> {
+  const existing = await lab.records.scan(COLLECTIONS.entities, null, 500);
+  const found = existing.items.find((e) => (e as { type?: string }).type === 'research-intent');
+  if (found) return found.id;
+  const intent = await lab.service.createResearchIntent({
+    question: 'investigate liquid rhythmic material', agentId });
+  return intent.id;
+}
+
+/** alchemy explore --material <id> --configuration <id> --variations 8 --seed 1000 --output ./previews */
+async function cmdExplore(): Promise<void> {
+  const lab = await openLab(ROOT);
+  const artist = await lab.service.registerAgent({ kind: 'human', name: 'artist', version: '1' });
+  const materialId = flag('material', await firstPromotedMaterial(lab));
+  const cfg = configurationById(flag('configuration', FRAGMENT_EXPLORATION_V1.id));
+  const variations = Number(flag('variations', String(cfg.defaultVariationCount)));
+  const seed = Number(flag('seed', '1000'));
+  const output = flag('output', './previews');
+  const intentId = flag('intent', await ensureIntent(lab, artist.id));
+
+  const started = Date.now();
+  const set = await lab.service.runResearchConfiguration({
+    materialId, configuration: cfg, researchIntentId: intentId,
+    baseSeed: seed, variationCount: variations, agentId: artist.id });
+  const { manifest, path } = await exportPreviewSet(set, output);
+  const elapsed = Date.now() - started;
+
+  heading(`explore ${cfg.id}@${cfg.version}`);
+  log(`source material: ${materialId}`);
+  log(`base seed:       ${seed}   variations: ${set.variations.length}`);
+  for (const e of manifest.entries) {
+    log(`  v${String(e.variationIndex).padStart(2, '0')} seed=${e.seed} ` +
+        `hash=${e.contentHash.slice(0, 10)}… ${e.file}`);
+  }
+  log(`unique hashes:   ${new Set(manifest.entries.map((e) => e.contentHash)).size}`);
+  log(`generated in:    ${elapsed} ms`);
+  log(`manifest:        ${path}`);
+  log(`no Material Entities were created — listen, then retain or discard`);
+  await lab.close();
+}
+
+/** alchemy retain-preview --preview <id|suffix> --output ./previews */
+async function cmdRetainPreview(): Promise<void> {
+  const lab = await openLab(ROOT);
+  const artist = await lab.service.registerAgent({ kind: 'human', name: 'artist', version: '1' });
+  const output = flag('output', './previews');
+  const manifest = await readManifest(output);
+  const preview = await previewFromManifest(manifest, flag('preview'), output, lab);
+  const r = await lab.service.retain(preview, artist.id, flag('why', 'worth laboratory memory'));
+  heading('retain');
+  log(`material ${r.material.id} state=${r.material.lifecycleState} (created=${r.created})`);
+  log(`config ${r.material.attributes.configurationId}@${r.material.attributes.configurationVersion}` +
+      ` seed=${r.material.attributes.seed}`);
+  await lab.close();
+}
+
+/** alchemy discard-preview --preview <id> — runtime only, nothing to undo. */
+async function cmdDiscardPreview(): Promise<void> {
+  heading('discard');
+  log(`preview ${flag('preview')} discarded — it was runtime state; no Entity, no Transition`);
+  log('siblings in the set are unaffected');
+}
+
+async function cmdPromoteMaterial(): Promise<void> {
+  const lab = await openLab(ROOT);
+  const artist = await lab.service.registerAgent({ kind: 'human', name: 'artist', version: '1' });
+  const r = await lab.service.promote(flag('material'), artist.id, flag('why', 'keeper'));
+  heading('promote');
+  log(`material ${r.material.id} state=${r.material.lifecycleState} (changed=${r.changed})`);
+  await lab.close();
+}
+
+async function cmdRejectMaterial(): Promise<void> {
+  const lab = await openLab(ROOT);
+  const artist = await lab.service.registerAgent({ kind: 'human', name: 'artist', version: '1' });
+  const r = await lab.service.reject(flag('material'), artist.id, flag('why', 'dead end'));
+  heading('reject');
+  log(`material ${r.material.id} state=${r.material.lifecycleState} (changed=${r.changed})`);
+  log('history and genealogy preserved; excluded from the default Inventory');
+  await lab.close();
+}
+
+/** alchemy compare --output ./previews — runtime comparison group, no canonical writes. */
+async function cmdCompare(): Promise<void> {
+  const output = flag('output', './previews');
+  const manifest = await readManifest(output);
+  const group = new ComparisonGroup();
+  for (const e of manifest.entries) {
+    group.add(e.previewId, 'preview', `v${e.variationIndex} seed=${e.seed}`);
+  }
+  heading('comparison group (runtime only)');
+  for (const e of group.entries()) {
+    const entry = manifest.entries.find((m) => m.previewId === e.ref)!;
+    log(`  ${String(e.order).padStart(2)}. ${e.label}  ${entry.file}` +
+        `  frags=${(entry.derivedParameters as { fragmentCount?: number }).fragmentCount}`);
+  }
+  log(`${group.size()} entries — no Entity, Relationship or Knowledge created`);
+}
+
+/** alchemy corpus --output ./evaluation — listening corpus for artistic evaluation. */
+async function cmdCorpus(): Promise<void> {
+  const lab = await openLab(ROOT);
+  const output = flag('output', './evaluation');
+  const r = await buildEvaluationCorpus(lab, output, Number(flag('variations', '8')));
+  heading('artistic evaluation corpus');
+  log(`sources:                 ${r.sourceCount}`);
+  log(`previews generated:      ${r.previewCount}`);
+  log(`unique output hashes:    ${r.uniqueOutputHashes}`);
+  log(`second-generation:       ${r.secondGenerationPreviews}`);
+  log(`retained (not promoted): ${r.retainedCount}`);
+  log(`promoted:                ${r.promotedCount}`);
+  log(`rejected:                ${r.rejectedCount}`);
+  log(`genealogy depth:         ${r.genealogyDepth}`);
+  log(`duration:                ${r.durationMs} ms`);
+  log(`output:                  ${r.outputDirectory}`);
+  log('');
+  log('Listen and judge for yourself — these numbers say nothing about quality.');
+  await lab.close();
+}
+
 const command = process.argv[2] ?? 'demo';
 const table: Record<string, () => Promise<void>> = {
   migrate: cmdMigrate, reset: cmdReset, demo: cmdDemo,
   seed: cmdSeed, stats: cmdStats, queries: cmdQueries, audit: cmdAudit,
+  explore: cmdExplore, 'retain-preview': cmdRetainPreview,
+  'discard-preview': cmdDiscardPreview, promote: cmdPromoteMaterial, corpus: cmdCorpus,
+  reject: cmdRejectMaterial, compare: cmdCompare,
 };
 const handler = table[command];
 if (!handler) { console.error(`unknown command: ${command}`); process.exit(1); }
