@@ -39,7 +39,9 @@ test('canonical core has no Node, filesystem, SQL or engine dependency', async (
         }
       }
       // node:crypto is permitted: hashing and UUIDs have Web Crypto equivalents.
-      assert.ok(!/\bSELECT\b|\bINSERT\b|\bCREATE TABLE\b/i.test(source),
+      // Match SQL syntax, not prose. An English sentence containing the word
+      // "select" is not a SQL leak; `SELECT ... FROM` is.
+      assert.ok(!/\bSELECT\b[\s\S]{0,200}?\bFROM\b|\bINSERT\s+INTO\b|\bCREATE\s+TABLE\b|\bDELETE\s+FROM\b|\bUPDATE\b[\s\S]{0,80}?\bSET\b/.test(source),
         `${file} must not contain SQL`);
     }
   }
@@ -72,4 +74,45 @@ test('domain logic holds no long-lived or interactive transaction', async () => 
   // Every commit argument is a precomputed array or variable, never a callback.
   assert.ok(!/#records\.commit\(\s*(async\s*)?\(/.test(source),
     'commit never receives a callback that would run logic inside a transaction');
+});
+
+test('no new structural primitive is introduced', async () => {
+  // The five canonical primitives are fixed by ADR-005. Adding a sixth
+  // collection or a parallel root model would violate it.
+  const primitives = await readFile('src/core/primitives.ts', 'utf8');
+  const collections = [...primitives.matchAll(/^\s{2}(\w+):\s*'(\w+)',$/gm)].map((m) => m[2]);
+  assert.deepEqual(collections.sort(),
+    ['agents', 'entities', 'knowledge', 'meta', 'relationships', 'transitions'],
+    'exactly the five primitives plus meta');
+
+  // ResearchConfiguration and Preview Set must not become persisted roots.
+  const schema = await readFile('src/persistence/schema.ts', 'utf8');
+  for (const forbidden of ['configurations', 'previewSets', 'preview_sets', 'comparisonGroups']) {
+    assert.ok(!schema.includes(forbidden),
+      `${forbidden} must not be a persisted collection`);
+  }
+  const exploration = await readFile('src/domain/alchemy/exploration.ts', 'utf8');
+  assert.ok(!/RECORD|COLLECTIONS|commit\(/.test(exploration),
+    'the Preview Set model is runtime-only and never writes records');
+});
+
+test('exploration layers introduce no Node or UI dependency', async () => {
+  for (const file of [
+    'src/audio/operations.ts',
+    'src/domain/alchemy/research-configuration.ts',
+    'src/domain/alchemy/exploration.ts',
+  ]) {
+    const source = await readFile(file, 'utf8');
+    for (const spec of ['node:fs', 'node:path', 'node:os', 'node:sqlite', 'document', 'window']) {
+      assert.ok(!new RegExp(`from '${spec}'|\\b${spec}\\.`).test(source),
+        `${file} must not depend on ${spec}`);
+    }
+    // Strip comments first: a comment saying "no Math.random" is documentation,
+    // not a call. The rule is about executable code.
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    assert.ok(!/Math\.random\s*\(/.test(code),
+      `${file} must not use unseeded randomness`);
+  }
 });
