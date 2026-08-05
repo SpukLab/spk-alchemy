@@ -16,6 +16,10 @@ import type { AnalyzerDefinition } from '../../audio/analyzer.ts';
 import { analyzeBytes, ANALYSIS_SCHEMA_VERSION } from '../../audio/analyzer.ts';
 import type { OperationName, OperationParameters } from '../../audio/experiment.ts';
 import { applyOperation, IMPLEMENTATION_VERSION } from '../../audio/experiment.ts';
+import type { ResearchConfiguration } from './research-configuration.ts';
+import { describeParameters } from './research-configuration.ts';
+import type { PreviewSet, PreviewVariation } from './exploration.ts';
+import { decodeWav } from '../../audio/wav.ts';
 
 const SCHEMA_VERSION = 1;
 
@@ -28,11 +32,18 @@ export interface Preview {
   readonly stagingRef: string;
   readonly experimentId: string;
   readonly sourceMaterialIds: readonly string[];
-  readonly operation: OperationName;
-  readonly parameters: OperationParameters;
+  readonly operation: OperationName | string;
+  readonly parameters: OperationParameters | Record<string, unknown>;
   readonly implementationVersion: string;
   readonly bytes: Uint8Array;
   readonly contentHash: string;
+  /** Present when the Preview came from a ResearchConfiguration execution. */
+  readonly exploration?: {
+    configurationId: string;
+    configurationVersion: string;
+    variationIndex: number;
+    seed: number;
+  };
 }
 
 export interface RetainResult { material: Entity; transition: Transition; created: boolean }
@@ -195,6 +206,7 @@ export class AlchemyService {
   async createExperiment(input: {
     researchIntentId: string; inputMaterialIds: readonly string[];
     operation: OperationName; parameters?: OperationParameters; agentId: string;
+    configuration?: ResearchConfiguration; baseSeed?: number;
   }): Promise<Entity> {
     await this.#requireAgent(input.agentId);
     if (!input.researchIntentId) {
@@ -215,8 +227,15 @@ export class AlchemyService {
       attributes: {
         operation: input.operation,
         parameters: (input.parameters ?? {}) as Json,
-        implementationVersion: IMPLEMENTATION_VERSION,
+        implementationVersion: input.configuration?.implementationVersion ?? IMPLEMENTATION_VERSION,
         executionAgentId: input.agentId,
+        ...(input.configuration ? {
+          configurationId: input.configuration.id,
+          configurationVersion: input.configuration.version,
+          configurationSchemaVersion: input.configuration.schemaVersion,
+          operationSequence: input.configuration.operations.map((o) => o.operation),
+          baseSeed: input.baseSeed ?? null,
+        } : {}),
       },
     };
     const mutations: Mutation[] = [
@@ -255,6 +274,96 @@ export class AlchemyService {
       operation, parameters,
       implementationVersion: String(experiment.attributes.implementationVersion),
       bytes: outputBytes, contentHash: outputHash,
+    };
+  }
+
+  /**
+   * Execute one ResearchConfiguration over a Material and return a runtime
+   * Preview Set. Nothing is persisted: each variation stays runtime state until
+   * an explicit Retain, exactly as ADR-008 requires.
+   */
+  async runResearchConfiguration(input: {
+    materialId: string;
+    configuration: ResearchConfiguration;
+    researchIntentId: string;
+    baseSeed: number;
+    variationCount?: number;
+    agentId: string;
+  }): Promise<PreviewSet> {
+    const agent = await this.#requireAgent(input.agentId);
+    const material = await this.#requireEntity(input.materialId);
+    const intent = await this.#records.get(COLLECTIONS.entities, input.researchIntentId);
+    if (!intent || (intent as unknown as Entity).type !== TYPE_RESEARCH_INTENT) {
+      throw new DomainRuleError(
+        `exploration references a Research Intent that does not exist: ${input.researchIntentId}`);
+    }
+    const hash = String(material.attributes.contentHash);
+    const bytes = await this.#content.get(hash);
+    if (!bytes) throw new IntegrityError(`missing content ${hash} for material ${material.id}`);
+
+    const cfg = input.configuration;
+    const audio = decodeWav(bytes);
+    const frames = audio.samples.length / audio.channels;
+    if (frames < cfg.inputConstraints.minFrames) {
+      throw new DomainRuleError(
+        `material ${material.id} has ${frames} frames, below the configuration minimum ` +
+        `of ${cfg.inputConstraints.minFrames}`);
+    }
+    if (audio.channels > cfg.inputConstraints.maxChannels) {
+      throw new DomainRuleError(
+        `material ${material.id} has ${audio.channels} channels, above the configuration ` +
+        `maximum of ${cfg.inputConstraints.maxChannels}`);
+    }
+
+    // One Experiment records the exploration as a reproducible research action.
+    const experiment = await this.createExperiment({
+      researchIntentId: input.researchIntentId,
+      inputMaterialIds: [material.id],
+      operation: 'exploration' as OperationName,
+      parameters: {} as OperationParameters,
+      agentId: input.agentId,
+      configuration: cfg,
+      baseSeed: input.baseSeed,
+    });
+
+    const count = input.variationCount ?? cfg.defaultVariationCount;
+    const variations: PreviewVariation[] = [];
+    for (let index = 0; index < count; index++) {
+      const seed = cfg.variationSeed(input.baseSeed, index);
+      const outputBytes = cfg.render(bytes, seed);
+      const outputHash = contentHash(outputBytes);
+      const preview: Preview = {
+        kind: 'preview',
+        stagingRef: idempotencyKey('preview', experiment.id, String(seed), outputHash),
+        experimentId: experiment.id,
+        sourceMaterialIds: [material.id],
+        operation: cfg.id,
+        parameters: { configurationId: cfg.id, configurationVersion: cfg.version, seed },
+        implementationVersion: cfg.implementationVersion,
+        bytes: outputBytes,
+        contentHash: outputHash,
+        exploration: {
+          configurationId: cfg.id, configurationVersion: cfg.version,
+          variationIndex: index, seed,
+        },
+      };
+      variations.push({
+        index, seed, preview,
+        derivedParameters: describeParameters(seed, frames),
+      });
+    }
+
+    return {
+      kind: 'preview-set',
+      researchIntentId: input.researchIntentId,
+      sourceMaterialIds: [material.id],
+      configurationId: cfg.id,
+      configurationVersion: cfg.version,
+      implementationVersion: cfg.implementationVersion,
+      baseSeed: input.baseSeed,
+      variations,
+      executionAgentId: agent.id,
+      createdAt: this.#clock(),
     };
   }
 
@@ -298,10 +407,16 @@ export class AlchemyService {
       attributes: {
         contentHash: preview.contentHash,
         byteLength: preview.bytes.byteLength,
-        origin: 'experiment',
+        origin: preview.exploration ? 'exploration' : 'experiment',
         operation: preview.operation,
         parameters: preview.parameters as Json,
         implementationVersion: preview.implementationVersion,
+        ...(preview.exploration ? {
+          configurationId: preview.exploration.configurationId,
+          configurationVersion: preview.exploration.configurationVersion,
+          variationIndex: preview.exploration.variationIndex,
+          seed: preview.exploration.seed,
+        } : {}),
       },
     };
     this.#registry.entityType(material.type).validate?.(material.attributes);
