@@ -124,3 +124,109 @@ what implementation revealed; it does not establish rules.
 Terminology: every occurrence of `canon` in this repository is the **Epistemic
 Canon** — the Knowledge Graph epistemic stage. No code change was required, since
 the term was never used here to mean the governance repository.
+
+---
+
+# Phase 2 — Material Exploration Loop
+
+Findings are separated by epistemic weight, per the Governance Canon's own
+distinction: what was measured, what the artist reported, what I inferred, and
+what a future change might be. Nothing here is promoted directly into an ADR.
+
+## Measured evidence
+
+**M-1 — Actions from import to playback: two.** `seed` then `explore` produces
+eight listenable WAV files plus a manifest. A single `corpus` command produces
+the whole evaluation set. Generation of 8 variations from a 5000-frame source:
+**38–41 ms**. Full corpus — 3 sources, 28 previews, 2 generations, 6 retentions,
+7 promotions, 3 rejections — **96 ms**.
+
+**M-2 — Variation distinctness is total at the byte level.** 28 previews, 28
+unique content hashes, zero collisions. Fragment counts across one set ranged
+3–8, so the structural spread is visible in the manifest without listening.
+
+**M-3 — Reproducibility holds under the new configuration.** Identical source,
+configuration id and version, parameters and seed produce bit-identical bytes.
+Different base seeds produce zero overlapping hashes across sets.
+
+**M-4 — Preview generation persists nothing.** Eight previews, zero new Material
+Entities, zero Transitions. Retaining one of eight creates exactly one Entity;
+the seven siblings leave no trace.
+
+**M-5 — Two-generation genealogy resolves correctly.** A → B → C returns
+ancestors in order at depths 1 and 2, and descendants of A return both B and C.
+No special handling was needed: derived materials are ordinary Materials.
+
+**M-6 — Configuration exposed to the artist: four flags.** `--material`,
+`--variations`, `--seed`, `--output`. Everything else is derived from the seed.
+
+**M-7 — Repeated-content analysis cost unchanged.** Still one analysis per
+import regardless of shared content hashes, as recorded in F-2. Phase 2 did not
+worsen it; exploration outputs are genuinely distinct, so the duplicate case did
+not arise here at all.
+
+## Artist feedback
+
+**Not yet collected.** The corpus exists at `./evaluation` precisely so that
+listening can happen. Whether variations are *perceptually* distinct, and
+whether they remain related enough to form a future family, are questions the
+numbers above cannot answer and this document must not pretend to.
+
+## Inference
+
+**I-1 — Byte distinctness is not perceptual distinctness.** 28 unique hashes
+proves nothing about whether a listener can tell two variations apart. Fragment
+reordering with silence insertion should be audible, but that is a hypothesis
+until someone listens.
+
+**I-2 — Imported-as-promoted did not cause confusion in this phase.** Every
+exploration begins from a promoted material, so the Inventory was always
+non-empty and the loop never stalled. The convention remains local and
+reversible, per F-6. No evidence yet argues for an `available` state; adding one
+now would be speculative.
+
+**I-3 — The manifest is doing staging work.** Because the CLI is one process per
+command, the manifest bridges runtime Preview Sets across invocations. It is not
+persistence — it holds no canonical record and deleting it loses nothing
+canonical — but it is a boundary worth watching. A browser UI holding the
+Preview Set in memory would not need it.
+
+## Evidence on relationship redundancy
+
+**F-3 confirmed with usage data.** Across the whole codebase:
+
+- `output_of` is **read** in `src/query/queries.ts` (experiment inputs/outputs).
+- `produced_by_experiment` is **written** in `service.ts` and **never read**.
+
+Both carry the same source, the same target and the same direction, answering
+the same question: which experiment produced this material. `output_of` is fully
+derivable from `produced_by_experiment` and vice versa.
+
+**No change made.** Removing either would invalidate relationships already
+written in the existing corpus without a migration plan, and schema change is
+outside this phase. The finding is recorded for a focused ADR amendment with a
+migration, not a silent cleanup.
+
+## Evidence toward future abstractions
+
+**Research Method / Workbench.** One configuration was enough for this phase. A
+second one would immediately raise the question the Canon already anticipates:
+whether a reusable configuration is *knowledge* (Method) or *runtime surface*
+(Workbench). No evidence yet demands either. The right trigger is a second
+configuration that the artist actually wants to reuse and name, not a third
+architectural discussion.
+
+**Family / DNA Pack contract.** Seven promoted materials now exist with shared
+provenance — same configuration, same intent, adjacent seeds. That is the raw
+material of a family. Nothing yet requires the contract; it becomes necessary
+when something downstream needs to consume the group.
+
+## Test bug worth recording
+
+**F-13 — Two architectural assertions produced false positives**, both of the
+same class as F-10. One matched the word `SELECT` inside an English sentence
+("select or reorder fragments"); the other matched `Math.random` inside a
+comment saying the code must not use it. Both assertions were tightened to
+inspect SQL syntax and executable code rather than prose, and both were verified
+to still catch the real thing. The recurring lesson: an architectural test that
+greps prose will eventually block work for the wrong reason.

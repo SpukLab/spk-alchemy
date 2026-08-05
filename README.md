@@ -31,6 +31,29 @@ Not implemented, deliberately: Alchemy UI, Bench interaction, browser adapter,
 perceptual AI, Family authoring, DNA Pack publication, FieldsSet integration,
 automatic deduplication, analysis caching.
 
+## Material Exploration Loop
+
+The artistic loop on top of the substrate:
+
+```bash
+npm run seed                      # a corpus to explore
+npm run explore -- --variations 8 --seed 1000 --output ./previews
+# listen to ./previews/*.wav, then:
+npm run compare -- --output ./previews
+npm run retain -- --preview <id> --output ./previews
+npm run promote -- --material <id>
+npm run reject  -- --material <id>
+npm run corpus                    # full listening corpus for evaluation
+```
+
+`explore` runs one `ResearchConfiguration` (`fragment-exploration-v1`) and writes
+N deterministic WAV variations plus a manifest. **No Material Entity is created**
+until an explicit `retain`. Same source, configuration version and seed always
+produce bit-identical bytes; different seeds produce distinct results.
+
+A retained result is an ordinary Material and can feed the next exploration, so
+genealogy accumulates across generations.
+
 ## Requirements
 
 Node **≥ 22.6** only. There are **no runtime or dev dependencies**: persistence
