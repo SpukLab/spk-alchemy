@@ -54,11 +54,40 @@ produce bit-identical bytes; different seeds produce distinct results.
 A retained result is an ordinary Material and can feed the next exploration, so
 genealogy accumulates across generations.
 
+## iPhone web app
+
+The phone is the artistic surface; the CLI is validation and maintenance.
+
+```bash
+npm run web        # build the bundle and serve web/ on port 8788
+```
+
+Open it on the phone, then Share → Add to Home Screen. The app works offline:
+capture, exploration and materials all live in IndexedDB on the device. There is
+no server, no sync and no account.
+
+**Microphone capture needs a secure context.** Plain `http://` works only on
+localhost, so on a phone reach it over HTTPS or through a tunnel.
+
+The screen has three sections: capture (record or import, listen, ingest),
+exploration (pick a source, Explore, eight variations to keep or discard) and
+materials (promoted, retained, rejected). Genealogy, Agents, hashes and the
+Knowledge Graph are recorded but deliberately not shown — the phone should feel
+like an experimental recorder, not an administrative tool.
+
+Captured audio is normalised to canonical PCM16 WAV before hashing, analysis or
+experimentation, so the recording format the device happens to offer never
+reaches the domain.
+
 ## Requirements
 
-Node **≥ 22.6** only. There are **no runtime or dev dependencies**: persistence
-uses the built-in `node:sqlite`, tests use `node:test`, and TypeScript runs
-through native type stripping. Nothing to install.
+Node **≥ 22.6**. There are **no runtime dependencies**: persistence uses the
+built-in `node:sqlite`, tests use `node:test`, and TypeScript runs through native
+type stripping.
+
+Two dev dependencies exist for the browser work: `esbuild` builds the web bundle,
+and `fake-indexeddb` lets the adapter conformance suite run against IndexedDB in
+Node. Neither is shipped, and neither is reachable from the canonical core.
 
 ## Commands
 

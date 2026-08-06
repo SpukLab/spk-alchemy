@@ -230,3 +230,92 @@ comment saying the code must not use it. Both assertions were tightened to
 inspect SQL syntax and executable code rather than prose, and both were verified
 to still catch the real thing. The recurring lesson: an architectural test that
 greps prose will eventually block work for the wrong reason.
+
+---
+
+# Phase 3 — iPhone Capture & Exploration Slice
+
+## Measured evidence
+
+**M-8 — The IndexedDB adapter passes the conformance suite unmodified: 14/14.**
+Same file, same expected semantics, no adapter-specific allowances. Plus 4 new
+equivalence tests proving both adapters return identical results for the same
+operations, including adversarial keys, keyset pagination sequences and
+adjacency ordering.
+
+**M-9 — The suite caught two real adapter defects before any device saw them.**
+Both were in keyset pagination:
+
+1. `nextAfter` was decoded by scanning backwards for a `0x00` separator in the
+   composite entry key. Encoded string components legitimately contain `0x00`,
+   so the scan found the wrong boundary. Fixed by carrying the ordering key in
+   the entry value instead of reparsing it out of the key.
+2. The `after` bump appended `0x00`, which is a *prefix* of the matching entry
+   key (`scoped + 0x00 + recordId`) and therefore included the record the caller
+   had already seen. Fixed with `0x01`, which sorts above any separator.
+
+Neither is visible without a second engine. This is precisely the evidence
+ADR-009 was waiting for.
+
+**M-10 — The canonical core was not as portable as its purity test claimed.**
+`src/core/ids.ts` imported `node:crypto`. The purity test explicitly allowed it
+on the assumption that Web Crypto was an equivalent, but `crypto.subtle` is
+asynchronous and `contentHash` is synchronous throughout the domain. The bundler
+surfaced this immediately: `Could not resolve "node:crypto"`.
+
+Replaced with a pure synchronous SHA-256 in `src/core/sha256.ts`, verified
+byte-identical to `node:crypto` across **all 301 lengths from 0 to 300 bytes**
+plus 40 pseudo-random payloads. This mattered: a divergent hash would have
+silently invalidated every content identity already stored.
+
+That verification found a third defect — a padding-boundary bug that only
+appears when `length + 9` is an exact multiple of 64 (e.g. 55 bytes). Every
+other length was correct, so only a boundary-aware test could see it.
+
+**M-11 — Browser bundle: 70.9 KB, zero Node builtins.** The same canonical core,
+domain service and query layer the CLI uses; only the adapters differ.
+
+**M-12 — Recording format is detected, not assumed.** Preference order is PCM,
+then ALAC, then WebM/Opus, then the device default, resolved through
+`MediaRecorder.isTypeSupported()`. Lossless recording (ALAC and PCM) shipped in
+Safari 18.4, not 26 as first assumed; 18.4 is therefore the meaningful floor,
+and the code degrades to AAC below it without branching downstream.
+
+## Environment caveat — the honest limit of this phase
+
+**No test has run on an iPhone.** The conformance suite runs against a
+spec-compliant IndexedDB implementation in Node, not Safari. What is proven:
+the adapter satisfies the portable contract and agrees with SQLite on observable
+behaviour. What is NOT proven: that Safari's IndexedDB, its transaction
+auto-commit timing, its `getUserMedia` permissions flow, its
+`decodeAudioData` behaviour on captured MP4/ALAC, and its home-screen install
+path all behave as expected on a real device.
+
+Those are exactly the things a container cannot check. Until the app is opened
+on the phone, this phase is *implemented*, not *validated*.
+
+## Inference
+
+**I-4 — ADR-009's activation criterion is close but not met.** Conditions 1, 2
+and 3 have evidence: an IndexedDB adapter exists, passes the same suite, and
+matches Node's observable semantics. Condition 4 also holds — no canonical
+schema or query-layer redesign was needed; the two pagination fixes were inside
+the adapter, and the hashing change was a portability defect in the core rather
+than a contract change.
+
+But the evidence comes from a Node-hosted IndexedDB. My recommendation is to
+hold ADR-009 at `EXPERIMENTAL` until the app runs on the device, then promote it
+with device evidence rather than harness evidence. That is a judgement call and
+the decision is the owner's.
+
+**I-5 — The manifest staging file (I-3) is now unnecessary on the phone.** The
+browser holds the Preview Set in memory across the whole loop, exactly as the
+runtime model intended. The CLI still needs it because it is one process per
+command. The two surfaces exercise the same domain differently, which is a
+useful signal that the runtime/persistent boundary is drawn in the right place.
+
+## Proposed change
+
+None yet. Every finding above is either already fixed or a decision for the
+owner. Nothing here demonstrates a structural requirement that would justify
+opening a new ADR.
