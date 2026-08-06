@@ -8,4 +8,5 @@ previews/
 previews-gen2/
 evaluation/
 node_modules/
-web/dist/
+dist/
+web/lab.js

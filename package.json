@@ -23,7 +23,7 @@
     "reject": "node --experimental-strip-types --no-warnings src/cli/main.ts reject",
     "corpus": "node --experimental-strip-types --no-warnings src/cli/main.ts corpus",
     "build:web": "node build.mjs",
-    "serve": "node --experimental-strip-types --no-warnings -e \"import('./src/cli/serve.ts').then(m=>m.serve())\"",
+    "serve": "node --experimental-strip-types --no-warnings -e \"import('./src/cli/serve.ts').then(m=>m.serve('dist'))\"",
     "web": "npm run build:web && npm run serve"
   },
   "devDependencies": {

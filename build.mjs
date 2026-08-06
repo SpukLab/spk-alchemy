@@ -1,15 +1,40 @@
 import { build } from 'esbuild';
-import { cp, mkdir } from 'node:fs/promises';
+import { cp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
+import { execSync } from 'node:child_process';
 
 /**
- * Builds the browser bundle. The canonical core is unchanged: this only strips
- * types and bundles ESM for Safari. Node adapters are never pulled in — the
- * browser entry point imports only the IndexedDB and Web Audio adapters.
+ * Produces the complete deployable static directory in dist/.
+ *
+ * Everything is relative to the page, so the same artifact works at a domain
+ * root and under a GitHub Pages project base path such as /spk-alchemy/.
+ * No absolute paths, no injected base URL, no host assumptions.
+ *
+ * The canonical core is unchanged: this strips types and bundles ESM for
+ * Safari. Node adapters are never pulled in — the browser entry point imports
+ * only the IndexedDB and Web Audio adapters.
  */
-await mkdir('web/dist', { recursive: true });
+const OUT = 'dist';
+
+function commitId() {
+  for (const env of ['GITHUB_SHA', 'COMMIT_SHA']) {
+    if (process.env[env]) return process.env[env].slice(0, 7);
+  }
+  try { return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); }
+  catch { return 'local'; }
+}
+
+await rm(OUT, { recursive: true, force: true });
+await mkdir(OUT, { recursive: true });
+
+// Static shell first, then the bundle on top of it.
+await cp('web', OUT, {
+  recursive: true,
+  filter: (src) => !src.endsWith('lab.js'),   // generated, never copied
+});
+
 const result = await build({
   entryPoints: ['src/web/lab.ts'],
-  outfile: 'web/lab.js',
+  outfile: `${OUT}/lab.js`,
   bundle: true,
   format: 'esm',
   target: ['safari17'],
@@ -20,5 +45,23 @@ const result = await build({
   footer: { js: 'export { openWebLab as openLab };' },
   metafile: true,
 });
-const bytes = Object.values(result.metafile.outputs)[0]?.bytes ?? 0;
-console.log(`web/lab.js built: ${(bytes / 1024).toFixed(1)} KB`);
+
+// Stamp the build so the diagnostics panel can report exactly what is running.
+const version = commitId();
+const builtAt = new Date().toISOString();
+await writeFile(`${OUT}/build-info.json`,
+  JSON.stringify({ version, builtAt }, null, 2));
+
+// The service worker cache name carries the version, so a new deploy does not
+// serve a stale shell from the previous one.
+const sw = await readFile(`${OUT}/service-worker.js`, 'utf8');
+await writeFile(`${OUT}/service-worker.js`,
+  sw.replace("const CACHE = 'alchemy-shell-v1';", `const CACHE = 'alchemy-shell-${version}';`));
+
+// GitHub Pages runs Jekyll by default, which ignores files and directories
+// beginning with an underscore. Opting out keeps the artifact byte-for-byte.
+await writeFile(`${OUT}/.nojekyll`, '');
+
+const bytes = Object.values(result.metafile.outputs)
+  .reduce((sum, o) => sum + (o.bytes ?? 0), 0);
+console.log(`dist/ built — bundle ${(bytes / 1024).toFixed(1)} KB, version ${version}`);
