@@ -8,8 +8,10 @@ import { AlchemyQueries } from '../query/queries.ts';
 import { CURRENT_SCHEMA } from '../migrations/index.ts';
 import { FRAGMENT_EXPLORATION_V1 } from '../domain/alchemy/research-configuration.ts';
 import type { PreviewSet } from '../domain/alchemy/exploration.ts';
-import { normalizeToCanonicalWav, detectRecorderCapability } from '../adapters/web-audio/normalize.ts';
-import type { RecorderCapability } from '../adapters/web-audio/normalize.ts';
+import { normalizeToCanonicalWav } from '../adapters/web-audio/normalize.ts';
+import { detectRecorderCapability } from '../adapters/web-audio/capture-format-policy.ts';
+import type { RecorderCapability } from '../adapters/web-audio/capture-format-policy.ts';
+import { decodeImportedFile } from '../adapters/web-audio/import-decode-policy.ts';
 import { ANALYZER_V1 } from '../audio/analyzer.ts';
 import type { Entity } from '../core/primitives.ts';
 
@@ -22,7 +24,10 @@ import type { Entity } from '../core/primitives.ts';
  */
 export interface WebLab {
   recorderCapability: RecorderCapability;
+  /** Microphone capture: bytes always come from the CaptureFormatPolicy's chosen encoder. */
   ingest(input: ArrayBuffer, filename: string): Promise<Entity>;
+  /** File import: bytes are of unknown, unverified origin. Decode is the only gate. */
+  importFile(input: ArrayBuffer, filename: string): Promise<Entity>;
   explore(materialId: string, question: string, variations: number): Promise<PreviewSet>;
   retain(preview: Preview): Promise<Entity>;
   promote(materialId: string): Promise<void>;
@@ -72,8 +77,23 @@ export async function openWebLab(): Promise<WebLab> {
     recorderCapability: detectRecorderCapability(),
 
     async ingest(input, filename) {
-      // Normalise to canonical PCM16 WAV before hashing, analysis or experiment.
+      // Capture path: bytes are known-good, produced by the encoder this
+      // device just chose. Normalise to canonical PCM16 WAV before hashing,
+      // analysis or experiment.
       const bytes = await normalizeToCanonicalWav(input, audioContext,
+        { channels: 1, maxSeconds: 120 });
+      const material = await service.importMaterial({
+        bytes, filename: filename.replace(/\.[^.]+$/, '') + '.wav', agentId: artist.id });
+      await service.analyzeMaterial(material.id, ANALYZER_V1, analyzer.id);
+      return material;
+    },
+
+    async importFile(input, filename) {
+      // Import path: bytes are of unrecognised origin — a WAV or AIFF from
+      // Sound Forge or anywhere else. The only gate is an actual decode
+      // attempt; extension and MIME type are never consulted here. A failed
+      // decode throws ImportDecodeError before anything is created.
+      const bytes = await decodeImportedFile(filename, input, audioContext,
         { channels: 1, maxSeconds: 120 });
       const material = await service.importMaterial({
         bytes, filename: filename.replace(/\.[^.]+$/, '') + '.wav', agentId: artist.id });

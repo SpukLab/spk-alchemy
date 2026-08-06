@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { normalizeToCanonicalWav } from '../../src/adapters/web-audio/normalize.ts';
 import {
-  normalizeToCanonicalWav, detectRecorderCapability, PREFERRED_MIME_TYPES,
-} from '../../src/adapters/web-audio/normalize.ts';
+  detectRecorderCapability, PREFERRED_MIME_TYPES,
+} from '../../src/adapters/web-audio/capture-format-policy.ts';
 import { decodeWav } from '../../src/audio/wav.ts';
 import { contentHash } from '../../src/core/ids.ts';
 

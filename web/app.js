@@ -103,6 +103,24 @@ async function ingestCapture(blob, filename) {
   }
 }
 
+/**
+ * Importing an existing file (WAV, AIFF, M4A…) is a different path from a
+ * microphone capture: the bytes are of unknown origin, so decoding is the only
+ * gate. A file that cannot be decoded shows a specific error naming the file
+ * and leaves the current session untouched — no partial material is created.
+ */
+async function importFile(file) {
+  toast(`Leyendo ${file.name}…`);
+  try {
+    const material = await state.lab.importFile(await file.arrayBuffer(), file.name);
+    selectSource(material);
+    await renderMaterials();
+    toast('Incorporado al inventario');
+  } catch (err) {
+    toast(err.message || `No se pudo importar ${file.name}`);
+  }
+}
+
 // ---- exploration -----------------------------------------------------------
 
 function selectSource(material) {
@@ -313,7 +331,7 @@ function wire() {
   $('import').onclick = () => $('file').click();
   $('file').onchange = (e) => {
     const file = e.target.files?.[0];
-    if (file) ingestCapture(file, file.name);
+    if (file) importFile(file);
     e.target.value = '';
   };
   $('explore').onclick = runExploration;

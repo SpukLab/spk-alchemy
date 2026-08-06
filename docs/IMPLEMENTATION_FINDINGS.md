@@ -392,3 +392,43 @@ device.
 **Still pending:** microphone permission prompt, recording, playback, ingestion,
 exploration, retention, persistence across reload, and Home Screen install.
 Boot and capability detection are confirmed; the artistic loop is not.
+
+## Device evidence — import interoperability
+
+**M-16 — Root cause: `accept="audio/*"` filtered files by UTI, not by decode capability.**
+The recording, exploration and playback loop worked correctly on the real
+device, confirming the earlier fixes. But WAV and AIFF files exported from
+Sound Forge could not be **selected** in Safari's file picker: `accept="audio/*"`
+on iOS filters the Files browser by a UTI it infers from the attribute, and
+third-party audio exports frequently lack a UTI Safari recognises as strictly
+`public.audio`. The file never reached any application code — `normalizeToCanonicalWav`
+never even ran, because nothing was ever selected.
+
+This was a pure UI-layer defect. The decode boundary itself was already format-
+agnostic and had never filtered by MIME.
+
+**Fix.** `accept` now lists explicit extensions alongside the generic types:
+`.wav,.wave,.aif,.aiff,.m4a,.mp4,.caf,audio/*,video/mp4`. Extension and MIME
+remain hints only, surfaced through `describeImportCandidate` for a friendlier
+error message — never used to reject a file. The only authoritative check is
+`decodeImportedFile`, which attempts a real decode and throws a named
+`ImportDecodeError` on failure, before anything is created.
+
+**Structural fix, not just a wider list.** `PREFERRED_MIME_TYPES` (recording)
+and file import validation now live in separate modules —
+`capture-format-policy.ts` and `import-decode-policy.ts` — so a future change to
+recording codecs cannot silently narrow what files can be imported again. That
+coupling, even though it was never exercised in code before this fix, was
+exactly the shape of bug that produced M-16 in the first place: two unrelated
+questions sharing one answer.
+
+**Tests:** 11 new, covering WAV/AIFF with normal and empty/unusual MIME,
+existing M4A import, a named decode failure, zero IndexedDB writes on failure,
+successful entry into Exploration, survival across a store reopen, and a
+regression check that capture-format detection still selects ALAC on the exact
+capability profile M-14 reported from the device.
+
+**Still pending on the device:** select a real WAV exported from Forge, confirm
+it becomes the active source, run Explorar, retain one, reload Safari, confirm
+persistence. Repeat with a real AIFF file. Recording and exploration are already
+confirmed working (M-14); only the import path needed this fix.

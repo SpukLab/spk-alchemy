@@ -2,46 +2,16 @@ import { encodeWav } from '../../audio/wav.ts';
 import type { AudioBuffer as CanonicalAudio } from '../../audio/wav.ts';
 
 /**
- * Capture normalisation adapter.
+ * Shared decode boundary.
  *
- * MediaRecorder output format varies by device and Safari version: PCM and ALAC
- * arrived in Safari 18.4, WebM/Opus in the same release, and older versions
- * record MP4/AAC only. Rather than branch on any of that downstream, everything
- * captured or imported is decoded once here and normalised to the canonical
- * PCM16 WAV representation BEFORE hashing, analysis, experimentation or
- * reproducibility comparison.
+ * Both a microphone capture and an imported file end here: arbitrary encoded
+ * bytes go in, canonical PCM16 WAV bytes come out. Neither CaptureFormatPolicy
+ * nor ImportDecodePolicy duplicates this — they wrap it with source-specific
+ * hints and error messages, but the actual decode happens exactly once, in one
+ * place, for both paths.
  *
  * This lives in an adapter, not the canonical core: it depends on Web Audio.
  */
-
-/** Preference order for recording. Lossless first, then whatever the device offers. */
-export const PREFERRED_MIME_TYPES: readonly string[] = [
-  'audio/wav',                  // PCM
-  'audio/mp4; codecs=alac',     // ALAC, lossless
-  'audio/mp4;codecs=alac',
-  'audio/webm; codecs=opus',
-  'audio/webm',
-  'audio/mp4',                  // AAC fallback
-];
-
-export interface RecorderCapability { mimeType: string | null; lossless: boolean }
-
-/** Ask the browser rather than the user agent string. */
-export function detectRecorderCapability(
-  recorder: { isTypeSupported(t: string): boolean } | undefined =
-    (globalThis as unknown as { MediaRecorder?: { isTypeSupported(t: string): boolean } }).MediaRecorder,
-): RecorderCapability {
-  if (!recorder || typeof recorder.isTypeSupported !== 'function') {
-    return { mimeType: null, lossless: false };
-  }
-  for (const type of PREFERRED_MIME_TYPES) {
-    if (recorder.isTypeSupported(type)) {
-      return { mimeType: type, lossless: /wav|alac/i.test(type) };
-    }
-  }
-  return { mimeType: null, lossless: false }; // browser default
-}
-
 export interface NormalizeOptions {
   sampleRate?: number;
   channels?: number;
