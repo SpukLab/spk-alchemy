@@ -21,8 +21,13 @@
     "discard": "node --experimental-strip-types --no-warnings src/cli/main.ts discard-preview",
     "promote": "node --experimental-strip-types --no-warnings src/cli/main.ts promote",
     "reject": "node --experimental-strip-types --no-warnings src/cli/main.ts reject",
-    "corpus": "node --experimental-strip-types --no-warnings src/cli/main.ts corpus"
+    "corpus": "node --experimental-strip-types --no-warnings src/cli/main.ts corpus",
+    "build:web": "node build.mjs",
+    "serve": "node --experimental-strip-types --no-warnings -e \"import('./src/cli/serve.ts').then(m=>m.serve())\"",
+    "web": "npm run build:web && npm run serve"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "fake-indexeddb": "^6.2.5"
+  }
 }
