@@ -130,9 +130,16 @@ test('portable layers use no Node globals', async () => {
   for (const dir of PORTABLE_DIRS.concat(['src/adapters/indexeddb'])) {
     for await (const file of walk(dir)) {
       const source = await readFile(file, 'utf8');
+      // Strip comments AND string/template literal contents: prose describing
+      // an operation ("one deterministic global gain factor") is not a
+      // reference to Node's `global`, any more than a comment is. Only actual
+      // code positions should be checked.
       const code = source
         .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^\s*\/\/.*$/gm, '');
+        .replace(/^\s*\/\/.*$/gm, '')
+        .replace(/`(?:[^`\\]|\\.)*`/g, '``')
+        .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+        .replace(/"(?:[^"\\]|\\.)*"/g, '""');
       for (const name of NODE_GLOBALS) {
         // ArrayBuffer / SharedArrayBuffer are standard; Buffer alone is Node's.
         const pattern = name === 'Buffer'

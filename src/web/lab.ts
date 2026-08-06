@@ -6,7 +6,9 @@ import { AlchemyService } from '../domain/alchemy/service.ts';
 import type { Preview } from '../domain/alchemy/service.ts';
 import { AlchemyQueries } from '../query/queries.ts';
 import { CURRENT_SCHEMA } from '../migrations/index.ts';
-import { FRAGMENT_EXPLORATION_V1 } from '../domain/alchemy/research-configuration.ts';
+import { DEFAULT_FRAGMENT_EXPLORATION } from '../domain/alchemy/research-configuration.ts';
+import type { ResearchConfiguration } from '../domain/alchemy/research-configuration.ts';
+
 import type { PreviewSet } from '../domain/alchemy/exploration.ts';
 import { normalizeToCanonicalWav } from '../adapters/web-audio/normalize.ts';
 import { detectRecorderCapability } from '../adapters/web-audio/capture-format-policy.ts';
@@ -24,6 +26,8 @@ import type { Entity } from '../core/primitives.ts';
  */
 export interface WebLab {
   recorderCapability: RecorderCapability;
+  /** Which exploration configuration new explorations currently use. */
+  explorationConfiguration: Pick<ResearchConfiguration, 'id' | 'version'>;
   /** Microphone capture: bytes always come from the CaptureFormatPolicy's chosen encoder. */
   ingest(input: ArrayBuffer, filename: string): Promise<Entity>;
   /** File import: bytes are of unknown, unverified origin. Decode is the only gate. */
@@ -75,6 +79,9 @@ export async function openWebLab(): Promise<WebLab> {
 
   return {
     recorderCapability: detectRecorderCapability(),
+    explorationConfiguration: {
+      id: DEFAULT_FRAGMENT_EXPLORATION.id, version: DEFAULT_FRAGMENT_EXPLORATION.version,
+    },
 
     async ingest(input, filename) {
       // Capture path: bytes are known-good, produced by the encoder this
@@ -103,7 +110,7 @@ export async function openWebLab(): Promise<WebLab> {
 
     async explore(materialId, question, variations) {
       return service.runResearchConfiguration({
-        materialId, configuration: FRAGMENT_EXPLORATION_V1,
+        materialId, configuration: DEFAULT_FRAGMENT_EXPLORATION,
         researchIntentId: await intentFor(question),
         baseSeed: Date.now() >>> 0, variationCount: variations, agentId: artist.id });
     },

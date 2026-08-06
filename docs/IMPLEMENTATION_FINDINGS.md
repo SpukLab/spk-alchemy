@@ -432,3 +432,138 @@ capability profile M-14 reported from the device.
 it becomes the active source, run Explorar, retain one, reload Safari, confirm
 persistence. Repeat with a real AIFF file. Recording and exploration are already
 confirmed working (M-14); only the import path needed this fix.
+
+## Gain consistency refinement (fragment-exploration-v1@1.1.0)
+
+**Artist feedback** (kept separate from measured evidence, per the Canon's own
+distinction): "Variations are useful and distinct. Overall gain variation is
+slightly too broad; preserve volume character but narrow the listening-level
+range."
+
+### Baseline measurement, before any change
+
+Reference corpus: one 5000-frame synthetic source, 8 variations, base seed
+1000, `fragment-exploration-v1@1.0.0`, gain applied per-fragment only (existing
+decaying numerator, unchanged):
+
+| Variation | Peak | RMS | Clipped |
+|---|---|---|---|
+| v0 | 0.2580 | 0.0745 | 0 |
+| v1 | 0.3403 | 0.0822 | 0 |
+| v2 | 0.3403 | 0.0988 | 0 |
+| v3 | 0.2859 | 0.0940 | 0 |
+| v4 | 0.4537 | 0.1327 | 0 |
+| v5 | 0.3690 | 0.0787 | 0 |
+| v6 | 0.3060 | 0.0720 | 0 |
+| v7 | 0.1906 | 0.0667 | 0 |
+
+RMS range 0.0667–0.1327 (**6.0 dB spread**, ~2× ratio). Zero clipping already —
+the defect was inconsistency, not distortion.
+
+### Correction model chosen
+
+Per-fragment gain shaping (fragment, reorder, reverse-subset, space, decaying
+gain) is **untouched** — that is what gives each variation its internal
+dynamic character and the artist confirmed it should stay. One deterministic
+correction is added **after** reconstruction:
+
+1. Measure the completed Preview's peak and RMS (that Preview alone — never
+   its siblings).
+2. Compute the *ideal* correction toward a fixed target (`PREVIEW_TARGET_RMS =
+   0.09`, chosen because it sits near the middle of the observed baseline
+   range) — in dB, since dB is the perceptually linear unit.
+3. **Apply only 65% of that distance** (`PREVIEW_GAIN_PULL_STRENGTH`). A full
+   snap-to-target was tried first and rejected: every Preview measured
+   *exactly* 0.0900 RMS, a flat 0 dB spread — which is explicitly not the
+   goal ("do not make every result equally loud"). A partial pull narrows the
+   spread substantially while every Preview still measures audibly
+   differently from its siblings.
+4. Clamp the applied correction to ±4 dB (`PREVIEW_GAIN_MAX_BOOST_DB` /
+   `PREVIEW_GAIN_MAX_CUT_DB`).
+5. Re-check the *projected* peak against a safety ceiling
+   (`PREVIEW_PEAK_CEILING = 0.97`); if the correction would push it over,
+   reduce the correction to exactly clear the ceiling. Safety always wins over
+   the target.
+6. Apply one multiply to every sample, uniformly across channels (so stereo
+   balance is preserved exactly), round, clamp to int16 range.
+
+No compressor, no limiter, no multi-band processing — one measured global
+factor per Preview.
+
+### Result on the same reference corpus
+
+| Variation | Peak | RMS |
+|---|---|---|
+| v0 | 0.2918 | 0.0842 |
+| v1 | 0.3610 | 0.0872 |
+| v2 | 0.3203 | 0.0930 |
+| v3 | 0.2780 | 0.0914 |
+| v4 | 0.3526 | 0.1031 |
+| v5 | 0.4025 | 0.0859 |
+| v6 | 0.3538 | 0.0832 |
+| v7 | 0.2314 | 0.0811 |
+
+RMS range 0.0811–0.1031 — **6.0 dB → 2.1 dB**, roughly a 3× reduction in
+spread. Zero clipping. Every value still distinct.
+
+### Bound verification (isolated correction step, not conflated with fragment shaping)
+
+- Silence in → correction = 1 exactly, RMS stays 0, no NaN/Infinity.
+- Near-silent probe signal (raw RMS 0.00033): correction = **+4.00 dB**
+  exactly — the boost bound, not runaway gain.
+- Near-full-scale probe signal (raw peak 0.68): correction = **−4.00 dB**
+  exactly — the cut bound.
+- Signal at raw peak 0.998 (essentially clipping already): projected peak
+  after the −4 dB bound would still exceed the ceiling, so the peak-safety
+  step engaged and produced a final peak of 0.6296 — comfortably under 0.97,
+  zero clipped samples.
+
+### Configuration versioning
+
+`fragment-exploration-v1@1.0.0` is byte-for-byte unchanged — verified against
+golden hashes captured before this change. `fragment-exploration-v1@1.1.0` is
+a new configuration object with the same `id`, bumped `version` and
+`implementationVersion`, and one added operation step
+(`preview-gain-correction`) in its declared sequence. `DEFAULT_FRAGMENT_EXPLORATION`
+now points at 1.1.0 and is what every new exploration in the CLI, the
+evaluation corpus and the web app uses. `configurationById(id)` without a
+version resolves to the default; `configurationById(id, '1.0.0')` still
+resolves the original, byte-identical configuration.
+
+**A pre-existing latent bug was found and fixed in the same change:**
+`previewFromManifest` resolved a manifest's configuration by id only, then
+attributed the rebuilt Preview's `configurationVersion` to whatever that
+lookup returned — silently correct while only one version existed, but wrong
+the moment two did (an old 1.0.0 manifest would have been retained as if it
+were 1.1.0). It now resolves by `(id, manifest.configurationVersion)` and
+attributes the Preview using the manifest's own recorded version, never the
+resolved configuration's version.
+
+### Tests
+
+14 new tests: 1.0.0 hash preservation, 1.1.0 determinism, bit-identical
+same-seed reproduction, Preview-set independence (one alone vs. inside eight),
+measured spread reduction (6.0→2.1 dB, and generically "substantially
+narrower"), continued presence of internal spread (not flattened to one
+value), silence handling, bounded upward correction, bounded downward
+correction, zero clipping across the corpus and adversarial inputs, stereo
+channel-ratio preservation, Retain provenance recording `1.1.0`, and
+`(id, '1.0.0')` resolution reproducing the exact original hashes.
+
+### Two implementation bugs found and fixed during this change, not part of the gain model itself
+
+- **Purity-test false positives (F-13 pattern, again).** The word "global"
+  inside a string literal describing the new operation
+  (`'one deterministic global gain factor...'`) tripped the Node-globals
+  check added after the Buffer incident. The check stripped comments but not
+  string/template literal contents. Fixed by stripping those too, verified to
+  still catch real `Buffer.from(...)` and `process.env` usage.
+- **A missing import silently passed a syntax check.** An earlier edit to
+  `src/web/lab.ts` left `DEFAULT_FRAGMENT_EXPLORATION` used but never
+  imported. `node --experimental-strip-types -e "import(...)"` reported "ok"
+  because the reference lived inside function bodies never executed by that
+  probe — Node doesn't statically verify unresolved bindings, only syntax.
+  The bug surfaced only when the built bundle's `openLab()` was actually
+  *called* in a boot probe. Recorded because it is the same category of gap
+  as M-10/M-13/M-16: a check that passes without exercising the actual
+  runtime path is not evidence the path works.

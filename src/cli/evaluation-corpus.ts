@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Lab } from './context.ts';
-import { FRAGMENT_EXPLORATION_V1 } from '../domain/alchemy/research-configuration.ts';
+import { DEFAULT_FRAGMENT_EXPLORATION } from '../domain/alchemy/research-configuration.ts';
 import { exportPreviewSet } from './exploration-cli.ts';
 import { synthesize, encodeWav } from '../audio/wav.ts';
 import { selectVariation } from '../domain/alchemy/exploration.ts';
@@ -56,7 +56,7 @@ export async function buildEvaluationCorpus(
 
   for (const [i, source] of sources.entries()) {
     const set = await lab.service.runResearchConfiguration({
-      materialId: source.id, configuration: FRAGMENT_EXPLORATION_V1,
+      materialId: source.id, configuration: DEFAULT_FRAGMENT_EXPLORATION,
       researchIntentId: intent.id, baseSeed: 1000 * (i + 1),
       variationCount: variationsPerSource, agentId: artist.id });
     await exportPreviewSet(set, join(outputDir, `source-${i + 1}`));
@@ -73,7 +73,7 @@ export async function buildEvaluationCorpus(
 
   // One second-generation exploration over the first promoted result.
   const gen2 = await lab.service.runResearchConfiguration({
-    materialId: retained[0]!, configuration: FRAGMENT_EXPLORATION_V1,
+    materialId: retained[0]!, configuration: DEFAULT_FRAGMENT_EXPLORATION,
     researchIntentId: intent.id, baseSeed: 9000, variationCount: 4, agentId: artist.id });
   await exportPreviewSet(gen2, join(outputDir, 'generation-2'));
   for (const v of gen2.variations) { allHashes.add(v.preview.contentHash); seeds.push(v.seed); }

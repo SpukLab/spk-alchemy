@@ -5,7 +5,7 @@ import { ANALYZER_V1, ANALYZER_V2 } from '../audio/analyzer.ts';
 import { LIFECYCLE } from '../domain/alchemy/vocabulary.ts';
 import { KNOWLEDGE_KIND } from '../domain/alchemy/vocabulary.ts';
 import { COLLECTIONS } from '../core/primitives.ts';
-import { FRAGMENT_EXPLORATION_V1, configurationById } from '../domain/alchemy/research-configuration.ts';
+import { DEFAULT_FRAGMENT_EXPLORATION, configurationById } from '../domain/alchemy/research-configuration.ts';
 import { exportPreviewSet, readManifest, previewFromManifest } from './exploration-cli.ts';
 import { ComparisonGroup } from '../domain/alchemy/exploration.ts';
 import { buildEvaluationCorpus } from './evaluation-corpus.ts';
@@ -251,7 +251,7 @@ async function cmdExplore(): Promise<void> {
   const lab = await openLab(ROOT);
   const artist = await lab.service.registerAgent({ kind: 'human', name: 'artist', version: '1' });
   const materialId = flag('material', await firstPromotedMaterial(lab));
-  const cfg = configurationById(flag('configuration', FRAGMENT_EXPLORATION_V1.id));
+  const cfg = configurationById(flag('configuration', DEFAULT_FRAGMENT_EXPLORATION.id));
   const variations = Number(flag('variations', String(cfg.defaultVariationCount)));
   const seed = Number(flag('seed', '1000'));
   const output = flag('output', './previews');

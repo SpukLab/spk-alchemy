@@ -270,6 +270,9 @@ async function collectDiagnostics() {
                             : 'por defecto del dispositivo',
     ok: !!chosen?.mimeType }]);
 
+  const cfg = state.lab?.explorationConfiguration;
+  rows.push(['Configuración de exploración', {
+    value: cfg ? `${cfg.id}@${cfg.version}` : 'no iniciada', ok: !!cfg }]);
   rows.push(['Almacenamiento', { value: state.lab ? 'IndexedDB (local)' : 'no iniciado', ok: !!state.lab }]);
   rows.push(['Modo standalone', yes(window.navigator.standalone === true
     || window.matchMedia?.('(display-mode: standalone)').matches)]);

@@ -84,7 +84,9 @@ export async function previewFromManifest(
     (e) => e.previewId === previewId || e.previewId.endsWith(previewId));
   if (!entry) throw new Error(`preview ${previewId} not found in manifest`);
   const bytes = new Uint8Array(await readFile(join(outputDir, entry.file)));
-  const cfg = configurationById(manifest.configurationId);
+  // Pin to the manifest's exact version: an old (1.0.0) manifest must resolve
+  // to 1.0.0, never silently to whatever the current default is.
+  const cfg = configurationById(manifest.configurationId, manifest.configurationVersion);
   const { contentHash } = await import('../core/ids.ts');
   const actual = contentHash(bytes);
   if (actual !== entry.contentHash) {
@@ -98,7 +100,9 @@ export async function previewFromManifest(
     experimentId: entry.experimentId,
     sourceMaterialIds: entry.sourceMaterialIds,
     operation: cfg.id,
-    parameters: { configurationId: cfg.id, configurationVersion: cfg.version, seed: entry.seed },
+    parameters: {
+      configurationId: cfg.id, configurationVersion: manifest.configurationVersion, seed: entry.seed,
+    },
     implementationVersion: manifest.implementationVersion,
     bytes, contentHash: actual,
     exploration: {
