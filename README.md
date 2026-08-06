@@ -54,6 +54,25 @@ produce bit-identical bytes; different seeds produce distinct results.
 A retained result is an ordinary Material and can feed the next exploration, so
 genealogy accumulates across generations.
 
+## Live test build
+
+The app deploys automatically to GitHub Pages on every push to `main`:
+
+**https://spuklab.github.io/spk-alchemy/**
+
+Open it in Safari on the phone. Everything runs on the device — capture,
+exploration and materials all live in IndexedDB. Nothing is uploaded, there is
+no server, no account and no telemetry.
+
+**Local data is not a backup.** Clearing Safari's website data, or removing the
+Home Screen app, can erase retained materials. iOS may also evict storage from
+sites it considers unused.
+
+The **Dispositivo** section reports what this particular Safari supports:
+secure context, IndexedDB, `getUserMedia`, `MediaRecorder`, the recording MIME
+types it actually accepts, audio decoding, the active storage adapter and the
+build id. That is the information worth reporting back when something fails.
+
 ## iPhone web app
 
 The phone is the artistic surface; the CLI is validation and maintenance.
