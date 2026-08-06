@@ -351,3 +351,44 @@ treated as matches. A boot probe additionally loads the built bundle with
 ingestion, exploration, retention, persistence across reload, and Home Screen
 install. The first device test got as far as page load, which is itself new
 information: the shell, styling, layout and service worker all worked.
+
+**M-14 — The app boots on a real iPhone. Build `57aa16a`, all capabilities green.**
+
+| Capability | Result |
+|---|---|
+| Secure context (HTTPS) | yes |
+| IndexedDB | yes |
+| navigator.mediaDevices | yes |
+| getUserMedia | yes |
+| MediaRecorder | yes |
+| Audio decoding | yes |
+| Accepted recording types | `audio/mp4; codecs=alac`, `audio/mp4`, `audio/webm; codecs=opus`, `audio/webm` |
+| Format selected | `audio/mp4; codecs=alac` (lossless) |
+| Storage | IndexedDB (local) |
+| Standalone mode | no (Safari tab, not yet installed) |
+| Storage quota | 0.1 MB used of 39,322 MB |
+
+**Notably, this device does NOT accept `audio/wav`.** Runtime detection picked
+ALAC, so capture is lossless anyway. Had the recording format been hardcoded to
+PCM WAV — the obvious choice given the canonical representation is PCM16 WAV —
+capture would have failed outright on this phone. The preference-order detection
+in `detectRecorderCapability` is doing real work, not defensive decoration.
+
+The ~39 GB quota means storage is not a near-term constraint for a local corpus.
+
+**M-15 — A cache-first service worker pinned the device to a broken build.**
+After the Buffer fix was deployed and verified on the server, the phone kept
+failing with the identical error. The deployed `lab.js` had zero `Buffer`
+references; Safari was serving the previous one from the service worker cache,
+and cache-first meant the fix could never win.
+
+Application code is now network-first with a cache fallback; only immutable
+assets stay cache-first. Offline still works. The failure mode this removes is
+worse than the one it protects against: an offline app is inconvenient, an
+un-updatable broken app is unusable. A visible "clear cache and reload" control
+and the running build id in the header make the state diagnosable from the
+device.
+
+**Still pending:** microphone permission prompt, recording, playback, ingestion,
+exploration, retention, persistence across reload, and Home Screen install.
+Boot and capability detection are confirmed; the artistic loop is not.
