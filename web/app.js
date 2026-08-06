@@ -353,6 +353,21 @@ function wire() {
   }
 }
 
+/** Escape hatch: drop every cache and reload from the network. */
+function wireReset() {
+  const button = $('hard-reset');
+  if (!button) return;
+  button.onclick = async () => {
+    toast('Limpiando caché…');
+    try {
+      for (const key of await caches.keys()) await caches.delete(key);
+      const regs = await navigator.serviceWorker?.getRegistrations?.() ?? [];
+      for (const reg of regs) await reg.unregister();
+    } catch { /* best effort */ }
+    location.reload();
+  };
+}
+
 async function boot() {
   try {
     state.lab = await openLab();
@@ -360,7 +375,10 @@ async function boot() {
     $('capability').textContent = mimeType
       ? `Grabación: ${mimeType}${lossless ? ' · sin pérdida' : ''}`
       : 'Grabación: formato por defecto del dispositivo';
-    $('status').textContent = 'local · offline';
+    try {
+      const info = await (await fetch('./build-info.json', { cache: 'no-store' })).json();
+      $('status').textContent = `local · ${info.version}`;
+    } catch { $('status').textContent = 'local · offline'; }
     wire();
 
     // Capture may be impossible on this device or over http://. Explain it up
@@ -379,9 +397,20 @@ async function boot() {
   } catch (err) {
     $('status').textContent = 'error';
     toast(`No se pudo abrir el laboratorio: ${err.message}`);
+    // A failed boot is exactly when a stale cached build must be escapable.
+    await renderDiagnostics();
+    $('diag-toggle').textContent = 'Ocultar compatibilidad';
   }
+  wireReset();
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./service-worker.js').catch(() => {});
+    try {
+      const reg = await navigator.serviceWorker.register('./service-worker.js');
+      // Always check for a newer worker: a stale one must not pin an old build.
+      reg.update().catch(() => {});
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        if (e.data === 'cache-cleared') location.reload();
+      });
+    } catch { /* the app works without a service worker */ }
   }
 }
 
