@@ -8,7 +8,7 @@ import { MAX_BATCH_MUTATIONS } from '../../persistence/record-store.ts';
 import type { SchemaDeclaration, IndexDeclaration } from '../../persistence/schema.ts';
 import { indexesFor } from '../../persistence/schema.ts';
 import type { KeyComponent, KeyTuple } from '../../persistence/keys.ts';
-import { encodeKey, decodeKey, prefixUpperBound } from '../../persistence/keys.ts';
+import { encodeKey, decodeKey, prefixUpperBound, compareBytes } from '../../persistence/keys.ts';
 import { BatchTooLargeError, UniquenessError } from '../../core/errors.ts';
 
 /**
@@ -55,7 +55,7 @@ export class SqliteRecordStore implements RecordStore {
     return String(cur);
   }
 
-  #indexKey(decl: IndexDeclaration, record: StoredRecord): Buffer {
+  #indexKey(decl: IndexDeclaration, record: StoredRecord): Uint8Array {
     return encodeKey(decl.fields.map((f) => this.#extract(record, f)));
   }
 
@@ -137,8 +137,8 @@ export class SqliteRecordStore implements RecordStore {
       (i) => i.name === query.index && i.collection === query.collection);
     if (!decl) throw new Error(`unknown index ${query.collection}.${query.index}`);
 
-    let lower: Buffer | null = null;
-    let upper: Buffer | null = null;
+    let lower: Uint8Array | null = null;
+    let upper: Uint8Array | null = null;
     if (query.eq) { lower = encodeKey(query.eq); upper = prefixUpperBound(lower); }
     else if (query.prefix) { lower = encodeKey(query.prefix); upper = prefixUpperBound(lower); }
     else if (query.range) {
@@ -148,8 +148,10 @@ export class SqliteRecordStore implements RecordStore {
     // Keyset pagination: strictly after the last observed ordering tuple.
     if (query.after) {
       const afterKey = encodeKey(query.after);
-      const bump = Buffer.concat([afterKey, Buffer.from([0x00])]);
-      if (!lower || Buffer.compare(bump, lower) > 0) lower = bump;
+      const bump = new Uint8Array(afterKey.length + 1);
+      bump.set(afterKey, 0);
+      bump[afterKey.length] = 0x00;
+      if (!lower || compareBytes(bump, lower) > 0) lower = bump;
     }
 
     const clauses = ['e.collection = ?', 'e.index_name = ?'];
@@ -169,7 +171,7 @@ export class SqliteRecordStore implements RecordStore {
 
     const items = rows.map((r) => JSON.parse(r.payload) as StoredRecord);
     const nextAfter: KeyTuple | null = rows.length === query.limit && rows.length > 0
-      ? decodeKey(Buffer.from(rows[rows.length - 1]!.key))
+      ? decodeKey(new Uint8Array(rows[rows.length - 1]!.key))
       : null;
     return { items, nextAfter };
   }

@@ -6,6 +6,9 @@ import { KeyEncodingError } from '../core/errors.ts';
  * Both SQLite (BLOB comparison is bytewise memcmp) and IndexedDB (binary keys
  * compare bytewise) order the produced byte strings identically, so declared
  * ordering is engine-independent. Native mixed-type ordering is never relied on.
+ *
+ * Uses only Uint8Array, DataView and TextEncoder/TextDecoder: no Node globals,
+ * because this module runs in the browser as part of the canonical core.
  */
 export const KEY_ENCODING_VERSION = 1;
 
@@ -20,8 +23,28 @@ const TAG_INT = 0x20;
 const TAG_STR = 0x30;
 
 const INT_OFFSET = 1n << 63n;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
-function encodeInt(value: number): Buffer {
+export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) { out.set(p, offset); offset += p.length; }
+  return out;
+}
+
+/** Bytewise comparison, matching memcmp and IndexedDB binary key ordering. */
+export function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  const shared = Math.min(a.length, b.length);
+  for (let i = 0; i < shared; i++) {
+    if (a[i]! !== b[i]!) return a[i]! < b[i]! ? -1 : 1;
+  }
+  return a.length === b.length ? 0 : (a.length < b.length ? -1 : 1);
+}
+
+function encodeInt(value: number): Uint8Array {
   if (!Number.isInteger(value)) {
     throw new KeyEncodingError(
       `only integer numbers may be key components (got ${value}); ` +
@@ -30,10 +53,10 @@ function encodeInt(value: number): Buffer {
   if (!Number.isSafeInteger(value)) {
     throw new KeyEncodingError(`integer key component out of safe range: ${value}`);
   }
-  const buf = Buffer.alloc(9);
-  buf.writeUInt8(TAG_INT, 0);
+  const buf = new Uint8Array(9);
+  buf[0] = TAG_INT;
   // Offset binary: preserves signed order under unsigned bytewise comparison.
-  buf.writeBigUInt64BE(BigInt(value) + INT_OFFSET, 1);
+  new DataView(buf.buffer).setBigUint64(1, BigInt(value) + INT_OFFSET);
   return buf;
 }
 
@@ -41,32 +64,33 @@ function encodeInt(value: number): Buffer {
  * Strings: UTF-8, 0x00 escaped as 0x00 0xFF, terminated by 0x00 0x00.
  * The terminator sorts below any escaped NUL, so "" < "\u0000" and "a" < "ab".
  */
-function encodeString(value: string): Buffer {
-  const raw = Buffer.from(value, 'utf8');
+function encodeString(value: string): Uint8Array {
+  const raw = encoder.encode(value);
   const out: number[] = [TAG_STR];
   for (const byte of raw) {
     if (byte === 0x00) { out.push(0x00, 0xff); } else { out.push(byte); }
   }
   out.push(0x00, 0x00);
-  return Buffer.from(out);
+  return Uint8Array.from(out);
 }
 
-export function encodeKey(tuple: KeyTuple): Buffer {
-  const parts: Buffer[] = [];
+export function encodeKey(tuple: KeyTuple): Uint8Array {
+  const parts: Uint8Array[] = [];
   for (const component of tuple) {
-    if (component === null) { parts.push(Buffer.from([TAG_NULL])); }
+    if (component === null) { parts.push(Uint8Array.of(TAG_NULL)); }
     else if (typeof component === 'boolean') {
-      parts.push(Buffer.from([component ? TAG_TRUE : TAG_FALSE]));
+      parts.push(Uint8Array.of(component ? TAG_TRUE : TAG_FALSE));
     }
     else if (typeof component === 'number') { parts.push(encodeInt(component)); }
     else if (typeof component === 'string') { parts.push(encodeString(component)); }
     else { throw new KeyEncodingError(`unsupported key component type: ${typeof component}`); }
   }
-  return Buffer.concat(parts);
+  return concatBytes(parts);
 }
 
-export function decodeKey(buf: Buffer): KeyComponent[] {
+export function decodeKey(buf: Uint8Array): KeyComponent[] {
   const out: KeyComponent[] = [];
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   let i = 0;
   while (i < buf.length) {
     const tag = buf[i]!;
@@ -75,9 +99,8 @@ export function decodeKey(buf: Buffer): KeyComponent[] {
     else if (tag === TAG_FALSE) { out.push(false); }
     else if (tag === TAG_TRUE) { out.push(true); }
     else if (tag === TAG_INT) {
-      const raw = buf.readBigUInt64BE(i);
+      out.push(Number(view.getBigUint64(i) - INT_OFFSET));
       i += 8;
-      out.push(Number(raw - INT_OFFSET));
     } else if (tag === TAG_STR) {
       const bytes: number[] = [];
       for (;;) {
@@ -91,7 +114,7 @@ export function decodeKey(buf: Buffer): KeyComponent[] {
         }
         bytes.push(b); i += 1;
       }
-      out.push(Buffer.from(bytes).toString('utf8'));
+      out.push(decoder.decode(Uint8Array.from(bytes)));
     } else {
       throw new KeyEncodingError(`unknown key tag 0x${tag.toString(16)}`);
     }
@@ -100,12 +123,12 @@ export function decodeKey(buf: Buffer): KeyComponent[] {
 }
 
 /** Smallest byte string strictly greater than every key having `prefix`. */
-export function prefixUpperBound(prefix: Buffer): Buffer | null {
-  const out = Buffer.from(prefix);
+export function prefixUpperBound(prefix: Uint8Array): Uint8Array | null {
+  const out = Uint8Array.from(prefix);
   for (let i = out.length - 1; i >= 0; i--) {
     if (out[i]! < 0xff) { out[i] = out[i]! + 1; return out.subarray(0, i + 1); }
   }
   return null; // all 0xff: unbounded above
 }
 
-export function compareKeys(a: Buffer, b: Buffer): number { return Buffer.compare(a, b); }
+export function compareKeys(a: Uint8Array, b: Uint8Array): number { return compareBytes(a, b); }

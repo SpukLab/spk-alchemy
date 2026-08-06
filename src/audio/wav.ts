@@ -15,49 +15,59 @@ export interface AudioBuffer {
 
 export const CANONICAL_HEADER_BYTES = 44;
 
+function writeAscii(view: DataView, offset: number, text: string): void {
+  for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+}
+function readAscii(view: DataView, offset: number, length: number): string {
+  let out = '';
+  for (let i = 0; i < length; i++) out += String.fromCharCode(view.getUint8(offset + i));
+  return out;
+}
+
 export function encodeWav(audio: AudioBuffer): Uint8Array {
   const dataBytes = audio.samples.length * 2;
-  const buf = Buffer.alloc(CANONICAL_HEADER_BYTES + dataBytes);
-  buf.write('RIFF', 0, 'ascii');
-  buf.writeUInt32LE(36 + dataBytes, 4);
-  buf.write('WAVE', 8, 'ascii');
-  buf.write('fmt ', 12, 'ascii');
-  buf.writeUInt32LE(16, 16);                       // PCM fmt chunk size
-  buf.writeUInt16LE(1, 20);                        // format = PCM
-  buf.writeUInt16LE(audio.channels, 22);
-  buf.writeUInt32LE(audio.sampleRate, 24);
-  buf.writeUInt32LE(audio.sampleRate * audio.channels * 2, 28); // byte rate
-  buf.writeUInt16LE(audio.channels * 2, 32);       // block align
-  buf.writeUInt16LE(16, 34);                       // bits per sample
-  buf.write('data', 36, 'ascii');
-  buf.writeUInt32LE(dataBytes, 40);
+  const bytes = new Uint8Array(CANONICAL_HEADER_BYTES + dataBytes);
+  const view = new DataView(bytes.buffer);
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataBytes, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);                       // PCM fmt chunk size
+  view.setUint16(20, 1, true);                        // format = PCM
+  view.setUint16(22, audio.channels, true);
+  view.setUint32(24, audio.sampleRate, true);
+  view.setUint32(28, audio.sampleRate * audio.channels * 2, true); // byte rate
+  view.setUint16(32, audio.channels * 2, true);       // block align
+  view.setUint16(34, 16, true);                       // bits per sample
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, dataBytes, true);
   for (let i = 0; i < audio.samples.length; i++) {
-    buf.writeInt16LE(audio.samples[i]!, CANONICAL_HEADER_BYTES + i * 2);
+    view.setInt16(CANONICAL_HEADER_BYTES + i * 2, audio.samples[i]!, true);
   }
-  return new Uint8Array(buf);
+  return bytes;
 }
 
 export function decodeWav(bytes: Uint8Array): AudioBuffer {
-  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'RIFF'
-    || buf.toString('ascii', 8, 12) !== 'WAVE') {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.length < 12 || readAscii(view, 0, 4) !== 'RIFF'
+    || readAscii(view, 8, 4) !== 'WAVE') {
     throw new Error('not a RIFF/WAVE stream');
   }
   let offset = 12;
   let sampleRate = 0, channels = 0, bitsPerSample = 0;
   let samples: Int16Array | null = null;
-  while (offset + 8 <= buf.length) {
-    const id = buf.toString('ascii', offset, offset + 4);
-    const size = buf.readUInt32LE(offset + 4);
+  while (offset + 8 <= bytes.length) {
+    const id = readAscii(view, offset, 4);
+    const size = view.getUint32(offset + 4, true);
     const body = offset + 8;
     if (id === 'fmt ') {
-      channels = buf.readUInt16LE(body + 2);
-      sampleRate = buf.readUInt32LE(body + 4);
-      bitsPerSample = buf.readUInt16LE(body + 14);
+      channels = view.getUint16(body + 2, true);
+      sampleRate = view.getUint32(body + 4, true);
+      bitsPerSample = view.getUint16(body + 14, true);
     } else if (id === 'data') {
       const count = Math.floor(size / 2);
       const out = new Int16Array(count);
-      for (let i = 0; i < count; i++) out[i] = buf.readInt16LE(body + i * 2);
+      for (let i = 0; i < count; i++) out[i] = view.getInt16(body + i * 2, true);
       samples = out;
     }
     offset = body + size + (size % 2); // chunks are word-aligned

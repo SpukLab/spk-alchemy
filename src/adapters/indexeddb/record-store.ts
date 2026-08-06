@@ -5,7 +5,7 @@ import { MAX_BATCH_MUTATIONS } from '../../persistence/record-store.ts';
 import type { SchemaDeclaration, IndexDeclaration } from '../../persistence/schema.ts';
 import { indexesFor } from '../../persistence/schema.ts';
 import type { KeyComponent, KeyTuple } from '../../persistence/keys.ts';
-import { encodeKey, decodeKey, prefixUpperBound } from '../../persistence/keys.ts';
+import { encodeKey, decodeKey, prefixUpperBound, compareBytes, concatBytes } from '../../persistence/keys.ts';
 import { BatchTooLargeError, UniquenessError } from '../../core/errors.ts';
 
 /**
@@ -64,12 +64,6 @@ function scopePrefix(collection: string, index: string): Uint8Array {
   return new Uint8Array(encodeKey([collection, index]));
 }
 
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0); out.set(b, a.length);
-  return out;
-}
-
 export class IndexedDbRecordStore implements RecordStore {
   readonly #db: IDBDatabase;
   readonly #schema: SchemaDeclaration;
@@ -123,9 +117,9 @@ export class IndexedDbRecordStore implements RecordStore {
     const out: Uint8Array[] = [];
     for (const decl of indexesFor(this.#schema, collection)) {
       const prefix = scopePrefix(collection, decl.name);
-      const upper = prefixUpperBound(Buffer.from(prefix));
+      const upper = prefixUpperBound(prefix);
       const range = upper
-        ? IDBKeyRange.bound(prefix, new Uint8Array(upper), false, true)
+        ? IDBKeyRange.bound(prefix, upper, false, true)
         : IDBKeyRange.lowerBound(prefix);
       const keys = await request(store.getAllKeys(range) as IDBRequest<IDBValidKey[]>);
       const values = await request(
@@ -142,10 +136,10 @@ export class IndexedDbRecordStore implements RecordStore {
   ): Promise<string | null> {
     const tx = this.#db.transaction(INDEX_STORE, 'readonly');
     const store = tx.objectStore(INDEX_STORE);
-    const scoped = concatBytes(scopePrefix(collection, decl.name), key);
-    const upper = prefixUpperBound(Buffer.from(scoped));
+    const scoped = concatBytes([scopePrefix(collection, decl.name), key]);
+    const upper = prefixUpperBound(scoped);
     const range = upper
-      ? IDBKeyRange.bound(scoped, new Uint8Array(upper), false, true)
+      ? IDBKeyRange.bound(scoped, upper, false, true)
       : IDBKeyRange.lowerBound(scoped);
     const values = await request(store.getAll(range) as IDBRequest<{ recordId: string }[]>);
     const clash = values.find((v) => v.recordId !== id);
@@ -233,19 +227,15 @@ export class IndexedDbRecordStore implements RecordStore {
 
     const scope = scopePrefix(query.collection, decl.name);
     let lower: Uint8Array = scope;
-    let upper: Uint8Array | null = (() => {
-      const u = prefixUpperBound(Buffer.from(scope));
-      return u ? new Uint8Array(u) : null;
-    })();
+    let upper: Uint8Array | null = prefixUpperBound(scope);
 
     const scoped = (tuple: KeyTuple): Uint8Array =>
-      concatBytes(scope, new Uint8Array(encodeKey(tuple)));
+      concatBytes([scope, encodeKey(tuple)]);
 
     if (query.eq || query.prefix) {
       const base = scoped((query.eq ?? query.prefix)!);
       lower = base;
-      const u = prefixUpperBound(Buffer.from(base));
-      upper = u ? new Uint8Array(u) : null;
+      upper = prefixUpperBound(base);
     } else if (query.range) {
       if (query.range.gte) lower = scoped(query.range.gte);
       if (query.range.lt) upper = scoped(query.range.lt);
@@ -258,8 +248,8 @@ export class IndexedDbRecordStore implements RecordStore {
       // it. 0x01 sorts above every separator, excluding the exact match while
       // keeping every greater ordering key. No ordering key is a strict prefix
       // of another, because each one ends with the record id component.
-      const bump = concatBytes(scoped(query.after), new Uint8Array([0x01]));
-      if (Buffer.compare(Buffer.from(bump), Buffer.from(lower)) > 0) lower = bump;
+      const bump = concatBytes([scoped(query.after), Uint8Array.of(0x01)]);
+      if (compareBytes(bump, lower) > 0) lower = bump;
     }
 
     const range = upper
@@ -285,8 +275,8 @@ export class IndexedDbRecordStore implements RecordStore {
     let nextAfter: KeyTuple | null = null;
     if (values.length === query.limit && values.length > 0) {
       const lastKey = values[values.length - 1]!.keyBytes;
-      nextAfter = decodeKey(Buffer.from(
-        lastKey instanceof Uint8Array ? lastKey : new Uint8Array(lastKey)));
+      nextAfter = decodeKey(
+        lastKey instanceof Uint8Array ? lastKey : new Uint8Array(lastKey));
     }
     return { items, nextAfter };
   }

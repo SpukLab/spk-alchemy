@@ -319,3 +319,35 @@ useful signal that the runtime/persistent boundary is drawn in the right place.
 None yet. Every finding above is either already fixed or a decision for the
 owner. Nothing here demonstrates a structural requirement that would justify
 opening a new ADR.
+
+## Device evidence — first real iPhone test
+
+**M-13 — The deployed app failed on the device: `Can't find variable: Buffer`.**
+Node's `Buffer` global had leaked into the canonical core through
+`src/persistence/keys.ts` (key encoding) and `src/audio/wav.ts` (the WAV codec).
+The page loaded and rendered, but `openLab()` threw before IndexedDB was ever
+reached, so nothing worked.
+
+This is the **second** instance of the same failure mode as M-10, and the reason
+is worth stating plainly: the purity test checked `import` statements only.
+Node globals require no import, so they pass a bundler check and every test in
+Node, then fail on the first real device. `node:crypto` was caught by esbuild
+because it is an import; `Buffer` was not, because it is not.
+
+Both modules were converted to `Uint8Array`, `DataView` and
+`TextEncoder`/`TextDecoder`. Byte-identity was verified against golden vectors
+captured before the change — 12 key encodings including empty components,
+prefix-like strings, embedded NUL, characters beyond the BMP, negative and
+boundary integers, plus 3 WAV encodings. Any divergence would have invalidated
+every stored index key and content hash.
+
+The purity test now also bans Node globals (`Buffer`, `process`, `__dirname`,
+`__filename`, `require`, `global`) in portable layers, and browser globals in
+the core, with `ArrayBuffer` and the `system_process` agent kind explicitly not
+treated as matches. A boot probe additionally loads the built bundle with
+`globalThis.Buffer` deleted, which is the condition Safari actually presents.
+
+**Still pending on the device:** microphone permission, recording, playback,
+ingestion, exploration, retention, persistence across reload, and Home Screen
+install. The first device test got as far as page load, which is itself new
+information: the shell, styling, layout and service worker all worked.

@@ -116,3 +116,42 @@ test('exploration layers introduce no Node or UI dependency', async () => {
       `${file} must not use unseeded randomness`);
   }
 });
+
+test('portable layers use no Node globals', async () => {
+  // node:crypto (M-10) and Buffer (M-13) both reached production because the
+  // purity test only checked IMPORTS. Node globals need no import, so they slip
+  // through a bundler check and fail on the device instead. This closes that.
+  const NODE_GLOBALS = [
+    'Buffer', 'process', '__dirname', '__filename', 'require', 'global',
+  ];
+  const BROWSER_ONLY = ['document', 'window', 'localStorage', 'navigator'];
+  const offenders: string[] = [];
+
+  for (const dir of PORTABLE_DIRS.concat(['src/adapters/indexeddb'])) {
+    for await (const file of walk(dir)) {
+      const source = await readFile(file, 'utf8');
+      const code = source
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+      for (const name of NODE_GLOBALS) {
+        // ArrayBuffer / SharedArrayBuffer are standard; Buffer alone is Node's.
+        const pattern = name === 'Buffer'
+          ? /(?<![A-Za-z])Buffer\s*\./
+          // Require a real usage boundary: `system_process` is a type value,
+          // not a reference to Node's process global.
+          : new RegExp(`(?<![A-Za-z._])${name}(?![A-Za-z_])`);
+        if (pattern.test(code)) offenders.push(`${file}: ${name}`);
+      }
+      // The browser adapters may touch browser globals; the core may not.
+      if (!file.startsWith('src/adapters/')) {
+        for (const name of BROWSER_ONLY) {
+          if (new RegExp(`(?<![A-Za-z.])${name}\\.`).test(code)) {
+            offenders.push(`${file}: ${name}`);
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(offenders, [],
+    'portable code must run unchanged in Node and the browser');
+});
