@@ -212,6 +212,92 @@ async function renderMaterials() {
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+
+// ---- device diagnostics ----------------------------------------------------
+
+/**
+ * What Safari on this particular device actually supports. This exists so the
+ * artist can report precisely what worked, rather than guessing from version
+ * numbers. It reports capabilities only — no architecture, no Knowledge Graph
+ * administration, no telemetry: nothing here leaves the device.
+ */
+const RECORDING_TYPES = [
+  'audio/wav', 'audio/mp4; codecs=alac', 'audio/mp4', 'audio/webm; codecs=opus',
+  'audio/webm', 'audio/ogg; codecs=opus', 'audio/mpeg',
+];
+
+async function collectDiagnostics() {
+  const rows = [];
+  const yes = (v) => ({ value: v ? 'sí' : 'no', ok: !!v });
+
+  rows.push(['Contexto seguro (HTTPS)', yes(window.isSecureContext)]);
+  rows.push(['IndexedDB', yes('indexedDB' in window)]);
+  rows.push(['navigator.mediaDevices', yes(!!navigator.mediaDevices)]);
+  rows.push(['getUserMedia', yes(!!navigator.mediaDevices?.getUserMedia)]);
+  rows.push(['MediaRecorder', yes(typeof window.MediaRecorder !== 'undefined')]);
+
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  rows.push(['Decodificación de audio', yes(!!AudioCtx?.prototype?.decodeAudioData)]);
+
+  const supported = typeof window.MediaRecorder !== 'undefined'
+    && typeof MediaRecorder.isTypeSupported === 'function'
+      ? RECORDING_TYPES.filter((t) => MediaRecorder.isTypeSupported(t))
+      : [];
+  rows.push(['Formatos de grabación',
+    { value: supported.length ? supported.join(', ') : 'ninguno detectado', ok: supported.length > 0 }]);
+
+  const chosen = state.lab?.recorderCapability;
+  rows.push(['Formato elegido', {
+    value: chosen?.mimeType ? `${chosen.mimeType}${chosen.lossless ? ' (sin pérdida)' : ''}`
+                            : 'por defecto del dispositivo',
+    ok: !!chosen?.mimeType }]);
+
+  rows.push(['Almacenamiento', { value: state.lab ? 'IndexedDB (local)' : 'no iniciado', ok: !!state.lab }]);
+  rows.push(['Modo standalone', yes(window.navigator.standalone === true
+    || window.matchMedia?.('(display-mode: standalone)').matches)]);
+
+  if (navigator.storage?.estimate) {
+    try {
+      const { usage, quota } = await navigator.storage.estimate();
+      rows.push(['Espacio usado', {
+        value: `${(usage / 1048576).toFixed(1)} MB de ${(quota / 1048576).toFixed(0)} MB`, ok: true }]);
+    } catch { /* estimate is best-effort */ }
+  }
+
+  let version = 'desconocida';
+  try {
+    const info = await (await fetch('./build-info.json', { cache: 'no-store' })).json();
+    version = `${info.version} · ${info.builtAt.slice(0, 16).replace('T', ' ')}`;
+  } catch { /* offline or not deployed */ }
+  rows.push(['Build', { value: version, ok: true }]);
+
+  return rows;
+}
+
+async function renderDiagnostics() {
+  const host = $('diag');
+  const rows = await collectDiagnostics();
+  const items = rows.map(([label, { value, ok }]) =>
+    `<div><dt>${escapeHtml(label)}</dt><dd class="${ok ? 'yes' : 'no'}">${escapeHtml(value)}</dd></div>`
+  ).join('');
+  host.innerHTML = `<div class="diag"><dl>${items}</dl></div>`;
+  host.hidden = false;
+}
+
+/** If capture cannot work, say why in plain language instead of failing silently. */
+function captureAvailability() {
+  if (!window.isSecureContext) {
+    return 'La grabación necesita una conexión segura (HTTPS). Abrí esta página por https:// y volvé a intentar.';
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return 'Este navegador no expone el micrófono a las páginas web. Podés importar audio desde Archivos.';
+  }
+  if (typeof window.MediaRecorder === 'undefined') {
+    return 'Este navegador no permite grabar desde la web. Podés importar audio desde Archivos.';
+  }
+  return null;
+}
+
 // ---- wiring ----------------------------------------------------------------
 
 function wire() {
@@ -231,6 +317,12 @@ function wire() {
     e.target.value = '';
   };
   $('explore').onclick = runExploration;
+  $('diag-toggle').onclick = async () => {
+    const host = $('diag');
+    if (!host.hidden) { host.hidden = true; $('diag-toggle').textContent = 'Ver compatibilidad'; return; }
+    await renderDiagnostics();
+    $('diag-toggle').textContent = 'Ocultar compatibilidad';
+  };
 
   $('previews').onclick = (e) => {
     const keep = e.target.dataset?.keep;
@@ -270,6 +362,19 @@ async function boot() {
       : 'Grabación: formato por defecto del dispositivo';
     $('status').textContent = 'local · offline';
     wire();
+
+    // Capture may be impossible on this device or over http://. Explain it up
+    // front rather than letting the record button fail silently.
+    const blocked = captureAvailability();
+    if (blocked) {
+      $('record').disabled = true;
+      const warn = document.createElement('div');
+      warn.className = 'warn';
+      warn.textContent = blocked;
+      $('capture-section').appendChild(warn);
+      await renderDiagnostics();
+      $('diag-toggle').textContent = 'Ocultar compatibilidad';
+    }
     await renderMaterials();
   } catch (err) {
     $('status').textContent = 'error';

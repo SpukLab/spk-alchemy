@@ -81,6 +81,14 @@ button[disabled]{opacity:.35}
 .intent::placeholder{color:var(--dim)}
 audio{width:100%;margin-top:8px;filter:invert(.9) hue-rotate(180deg)}
 .hint{color:var(--dim);font-size:12px;margin-top:6px}
+.diag{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:6px 14px;margin-top:8px}
+.diag dl{margin:0;font-size:13px}
+.diag div{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid #1e1e25}
+.diag div:last-child{border-bottom:0}
+.diag dt{color:var(--dim)}
+.diag dd{margin:0;text-align:right;font-variant-numeric:tabular-nums;word-break:break-word}
+.yes{color:#6fbf8b}.no{color:#d08a8a}
+.warn{background:#211a12;border:1px solid #4a3620;border-radius:var(--radius);padding:12px 14px;margin-top:10px;font-size:13px}
 </style>
 </head>
 <body>
@@ -125,6 +133,17 @@ audio{width:100%;margin-top:8px;filter:invert(.9) hue-rotate(180deg)}
       <button role="tab" data-tab="rejected" aria-selected="false">Rechazados</button>
     </div>
     <div id="materials"></div>
+  </section>
+  <section>
+    <h2>Dispositivo</h2>
+    <button id="diag-toggle" style="width:100%">Ver compatibilidad</button>
+    <div id="diag" hidden></div>
+    <p class="hint" style="margin-top:14px">
+      Todo ocurre en este teléfono. Las grabaciones no se suben a ningún servidor:
+      quedan en el almacenamiento local de Safari. Borrar los datos de sitios web,
+      o quitar la app de la pantalla de inicio, puede eliminar los materiales
+      guardados. No hay copia de respaldo.
+    </p>
   </section>
 </main>
 
