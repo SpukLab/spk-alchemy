@@ -2,7 +2,7 @@ import type { AudioBuffer } from '../../audio/wav.ts';
 import { decodeWav, encodeWav } from '../../audio/wav.ts';
 import {
   seededRandom, fragmentEvenly, shuffleWithSeed, sliceFragment,
-  reverseFrames, applyGain, silence, concatSamples,
+  reverseFrames, applyGain, silence, concatSamples, applyBoundaryFade,
 } from '../../audio/operations.ts';
 
 /**
@@ -207,6 +207,70 @@ function renderVariationV1_1(audio: AudioBuffer, seed: number): AudioBuffer {
   return { ...raw, samples };
 }
 
+// ---- Slice-boundary micro-fade (1.2.0) -------------------------------------
+
+/**
+ * Short deterministic fade around fragment/silence splice boundaries, to
+ * remove the discontinuity clicks measured at those cut points without
+ * smearing rhythm or shifting timing. Sample-rate independent in perceptual
+ * duration: 5ms converts to ~221 frames at 44.1kHz, exactly 240 at 48kHz.
+ */
+export const PREVIEW_BOUNDARY_FADE_MS = 5;
+
+export function fadeFramesForSampleRate(
+  sampleRateHz: number, fadeMs: number = PREVIEW_BOUNDARY_FADE_MS,
+): number {
+  return Math.round((sampleRateHz * fadeMs) / 1000);
+}
+
+/**
+ * Same fragment shaping and gain-consistency correction as 1.1.0, with one
+ * addition in between: every non-silence piece fades out unless it is the
+ * very last element of the Preview, and fades in unless it is the very first.
+ * That single rule covers all three boundary shapes without special cases —
+ * fragment-to-fragment fades both sides, fragment-to-silence fades only the
+ * outgoing fragment (never the silence itself), silence-to-fragment fades
+ * only the incoming fragment. The natural start and end of the whole Preview
+ * are never faded: they are not artificial splices.
+ */
+function renderVariationV1_2(audio: AudioBuffer, seed: number): AudioBuffer {
+  const frames = audio.samples.length / audio.channels;
+  const params = deriveParameters(seed, frames);
+  const fragments = fragmentEvenly(frames, params.fragmentCount);
+  const reversed = new Set(params.reversedFragments);
+  const gap = silence(params.silenceFrames, audio.channels);
+  const configuredFade = fadeFramesForSampleRate(audio.sampleRate);
+
+  const parts: Int16Array[] = [];
+  const isGap: boolean[] = [];
+  params.order.forEach((fragmentIndex, position) => {
+    const fragment = fragments[fragmentIndex];
+    if (!fragment) return;
+    let piece = sliceFragment(audio, fragment);
+    if (reversed.has(fragmentIndex)) piece = reverseFrames(piece, audio.channels);
+    const numerator = Math.max(3, params.gainNumerator - position);
+    piece = applyGain(piece, numerator, params.gainDenominator);
+    parts.push(piece);
+    isGap.push(false);
+    if (position < params.order.length - 1 && gap.length > 0) {
+      parts.push(gap);
+      isGap.push(true);
+    }
+  });
+
+  for (let i = 0; i < parts.length; i++) {
+    if (isGap[i]) continue; // silence itself is never faded
+    const fadeIn = i > 0 ? configuredFade : 0;
+    const fadeOut = i < parts.length - 1 ? configuredFade : 0;
+    if (fadeIn === 0 && fadeOut === 0) continue;
+    parts[i] = applyBoundaryFade(parts[i]!, audio.channels, fadeIn, fadeOut);
+  }
+
+  const raw = { ...audio, samples: concatSamples(parts) };
+  const { samples } = applyPreviewGainCorrection(raw.samples);
+  return { ...raw, samples };
+}
+
 // ---- configurations ---------------------------------------------------------
 
 export const FRAGMENT_EXPLORATION_V1: ResearchConfiguration = {
@@ -270,11 +334,48 @@ export const FRAGMENT_EXPLORATION_V1_1: ResearchConfiguration = {
   render: (inputBytes, seed) => encodeWav(renderVariationV1_1(decodeWav(inputBytes), seed)),
 };
 
+/**
+ * Same fragment shaping and Preview-level gain consistency as 1.1.0, plus
+ * deterministic micro-fades at every splice boundary. Preserves the cut and
+ * rearranged character — fades are a few hundred frames at most, an order of
+ * magnitude shorter than the shortest fragment — while removing the
+ * discontinuity clicks measured at fragment, reversal and silence boundaries.
+ */
+export const FRAGMENT_EXPLORATION_V1_2: ResearchConfiguration = {
+  id: 'fragment-exploration-v1',
+  name: 'Fragment exploration',
+  version: '1.2.0',
+  schemaVersion: RESEARCH_CONFIGURATION_SCHEMA_VERSION,
+  implementationVersion: '1.2.0',
+  inputConstraints: { requiredEncoding: 'pcm16-wav', minFrames: 64, maxChannels: 2 },
+  operations: [
+    ...FRAGMENT_EXPLORATION_V1.operations,
+    {
+      operation: 'boundary-fade',
+      description: `deterministic ${PREVIEW_BOUNDARY_FADE_MS}ms linear fade at fragment and ` +
+        'silence splice boundaries, capped for short fragments, to remove discontinuity clicks',
+    },
+    FRAGMENT_EXPLORATION_V1_1.operations[FRAGMENT_EXPLORATION_V1_1.operations.length - 1]!,
+  ],
+  parameterRanges: {
+    ...FRAGMENT_EXPLORATION_V1_1.parameterRanges,
+    boundaryFadeMs: {
+      min: PREVIEW_BOUNDARY_FADE_MS, max: PREVIEW_BOUNDARY_FADE_MS,
+      description: 'fixed micro-fade duration converted to frames at the source sample rate, ' +
+        'capped at one quarter of the enclosing fragment',
+    },
+  },
+  defaultVariationCount: 8,
+  seedStrategy: 'base-plus-index',
+  variationSeed: (baseSeed, index) => (baseSeed + index * 7919) >>> 0,
+  render: (inputBytes, seed) => encodeWav(renderVariationV1_2(decodeWav(inputBytes), seed)),
+};
+
 /** New explorations default to the latest configuration version. */
-export const DEFAULT_FRAGMENT_EXPLORATION = FRAGMENT_EXPLORATION_V1_1;
+export const DEFAULT_FRAGMENT_EXPLORATION = FRAGMENT_EXPLORATION_V1_2;
 
 export const BUILT_IN_CONFIGURATIONS: readonly ResearchConfiguration[] = [
-  FRAGMENT_EXPLORATION_V1, FRAGMENT_EXPLORATION_V1_1,
+  FRAGMENT_EXPLORATION_V1, FRAGMENT_EXPLORATION_V1_1, FRAGMENT_EXPLORATION_V1_2,
 ];
 
 const DEFAULT_VERSION_BY_ID = new Map<string, ResearchConfiguration>([

@@ -80,3 +80,40 @@ export function concatSamples(parts: readonly Int16Array[]): Int16Array {
   for (const p of parts) { out.set(p, offset); offset += p.length; }
   return out;
 }
+
+/**
+ * Deterministic linear micro-fade at a splice boundary, applied to one
+ * fragment piece. Fade-in ramps 0 -> 1 across its opening frames; fade-out
+ * ramps 1 -> 0 across its closing frames. Both windows are independently
+ * capped at floor(totalFrames / 4), so fade-in and fade-out can never overlap
+ * inside one piece and a very short fragment safely reduces toward zero fade
+ * rather than being rejected. The same coefficient is applied to every
+ * channel of a frame, so stereo imaging never shifts because of the fade.
+ */
+export function applyBoundaryFade(
+  samples: Int16Array, channels: number, fadeInFrames: number, fadeOutFrames: number,
+): Int16Array {
+  const totalFrames = channels > 0 ? samples.length / channels : 0;
+  const maxPerSide = Math.floor(totalFrames / 4);
+  const fadeIn = Math.min(fadeInFrames, maxPerSide);
+  const fadeOut = Math.min(fadeOutFrames, maxPerSide);
+  if (fadeIn <= 0 && fadeOut <= 0) return samples;
+
+  const out = Int16Array.from(samples);
+  for (let f = 0; f < fadeIn; f++) {
+    const gain = (f + 1) / fadeIn; // reaches exactly 1 at the last fade-in frame
+    for (let c = 0; c < channels; c++) {
+      const idx = f * channels + c;
+      out[idx] = Math.round(samples[idx]! * gain);
+    }
+  }
+  for (let f = 0; f < fadeOut; f++) {
+    const frame = totalFrames - fadeOut + f;
+    const gain = 1 - (f + 1) / fadeOut; // reaches exactly 0 at the last frame
+    for (let c = 0; c < channels; c++) {
+      const idx = frame * channels + c;
+      out[idx] = Math.round(samples[idx]! * gain);
+    }
+  }
+  return out;
+}
