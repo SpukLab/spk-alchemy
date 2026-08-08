@@ -814,3 +814,102 @@ The questions the brief asks (does grouping feel natural, is audition fast
 enough, does a Family feel like a meaningful unit, is a DNA Pack immediately
 usable outside Alchemy) require the physical checklist below. Nothing here is
 measured evidence about creative quality — only that the mechanism works.
+
+## Fix: duplicate DNA Pack download on iPhone
+
+### Root cause, confirmed by direct inspection
+
+`publishFamily()` in `web/app.js` called `downloadBlob(...)` **unconditionally**,
+then — if `navigator.share` and `navigator.canShare` were available — **also**
+called `navigator.share(...)`. One button press triggered both native export
+paths every time sharing was supported, which it is on iPhone Safari: the
+anchor download fired, and the share sheet opened over it. Safari's own
+download confirmation stayed queued behind the share sheet; accepting it after
+dismissing the share sheet downloaded the same ZIP a second time.
+
+There was no single-flight guard either: nothing prevented a rapid double-tap
+from calling `state.lab.publishFamily(...)` — the canonical action that
+creates a new pack version — twice.
+
+### Previous call sequence
+
+```
+Publicar DNA Pack (tap)
+  → state.lab.publishFamily(familyId)      [creates pack, canonical]
+  → downloadBlob(...)                       [anchor .click()]
+  → navigator.canShare(...) ? navigator.share(...)   [ALSO fires, unconditionally]
+```
+
+### Corrected sequence
+
+Two independent, mutually exclusive actions, coordinated by a new
+`DnaPackExportController` (`src/web/export-orchestrator.ts`) — pure, dependency-
+injected, unit-testable in Node without a DOM:
+
+```
+Publicar DNA Pack (tap)
+  → single-flight guard (ignore if a publish is already in flight)
+  → state.lab.publishFamily(familyId)      [canonical action, called at most once]
+  → downloadBlob(...)                       [the ONLY export this button ever performs]
+  → (artifact bytes retained for a possible later Share)
+
+Compartir último pack (tap, separate button, shown only when supported)
+  → single-flight guard (independent of Publish's guard)
+  → navigator.share(...) on the ALREADY-published bytes  [never re-publishes, never downloads]
+```
+
+The controller enforces this structurally, not by convention: `publishAndDownload`
+is the only method that calls the canonical publish action and the only one
+that calls `download`; `shareLast` is the only method that calls `share`, and
+it has no code path that calls `download` — success, cancellation and failure
+all return without touching the download function at all.
+
+### UI decision
+
+Kept the single primary Publish button (download-by-default, matching "if
+keeping the current single-button flow is substantially simpler, choose
+exactly one primary action") and added a separate, secondary **Compartir
+último pack** button that appears only after a successful publish and only
+when `navigator.canShare({ files })` reports true for that exact artifact.
+Opening a different Family or closing the Family screen resets the controller
+(`exportController.reset()`), so a stale artifact from a previous Family can
+never be shared by mistake.
+
+### Single-flight guard
+
+UI-level only, exactly as scoped: two independent boolean flags inside the
+controller (`#publishing`, `#sharing`), each guarding its own action. A
+duplicate tap while busy is **ignored outright** — `publishAndDownload`
+returns `null`, `shareLast` returns `'unavailable'` — never queued, never
+retried. No canonical state was added; the guarded action still creates
+exactly one Published Artifact per successful call, unchanged from before.
+
+### Verified unchanged
+
+ZIP format, manifest schema, Family/DNA Pack canonical mapping, pack
+versioning, and `fragment-exploration-v1@1.2.0` were not touched. A dedicated
+test publishes a pack, then runs an export interaction, and asserts the
+Family's `revision` attribute and the previously-published pack Entity's
+`attributes` are byte-identical to before — export is entirely client-side
+work on already-fetched bytes and never reaches canonical persistence.
+
+### Files added
+
+`src/web/export-orchestrator.ts`, `tests/integration/dna-pack-export.test.ts`.
+
+### Files modified
+
+`web/app.js` (controller wiring, `publishFamily` rewritten to use it,
+`shareLastPack` added, controller reset on family open/close), `web/index.html`
+(Share button), `web/service-worker.js` (precache the new bundle),
+`build.mjs` (second esbuild entry point for the self-contained orchestrator
+module).
+
+### Verified through the real deployable bundle
+
+Built `dist/export-orchestrator.js` as a standalone bundle (self-contained,
+no imports of its own — folding it into `lab.js` was unnecessary). Loaded both
+`dist/lab.js` and `dist/export-orchestrator.js` with `globalThis.Buffer`
+deleted and mock `download`/`share` functions: `publishAndDownload` produced
+exactly one download and zero shares; a subsequent `shareLast` produced
+exactly one share and no additional download.
