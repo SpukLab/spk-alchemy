@@ -698,3 +698,119 @@ that built `dist/lab.js` with `globalThis.Buffer` deleted (the condition
 Safari presents) and reported `explorationConfiguration:
 {"id":"fragment-exploration-v1","version":"1.2.0"}`. Full IndexedDB
 integration suite green against the same bundle path.
+
+## Family Curation and First DNA Pack
+
+**Artist context:** fragment-exploration-v1@1.2.0 is stable and physically
+validated; the loop now turns discovered material into usable output.
+
+### Canonical mapping
+
+No new structural primitive was introduced. Both concepts already existed as
+canonical types in ADR-005 and the glossary, unimplemented until this phase:
+
+**Family → Canonical Grouping.** A Family is an Entity (`type:
+'family-grouping'`, `role: 'grouping'`, single lifecycle state `active`, no
+transitions out of it) plus reified `grouped_in` Relationships (Material →
+Family, one per member, `metadata.order` carrying position). Membership edits
+never touch the Family Entity's identity: `addMember`/`removeMember` add or
+delete one Relationship; `reorderMembers` re-puts existing Relationships with
+updated `order` only. Every edit bumps `attributes.revision` on the Family
+Entity — a monotonic, deterministic counter used as the "Family
+version/revision identifier" in DNA Pack manifests, chosen over relying on
+`updatedAt` because a counter is exact and testable, a timestamp is not.
+
+**DNA Pack → Published Artifact.** An Entity (`type: 'dna-pack'`, `role:
+'publication'`, single lifecycle state `published`, no transitions — immutable
+by construction, not by convention) plus a `published_from` Relationship
+(DNA Pack → Family, carrying `packVersion`) and one `packaged_material`
+Relationship per exported member (DNA Pack → Material), mirroring the frozen
+manifest snapshot so pack contents stay queryable like any other genealogy.
+Publication is recorded as one `publish` Transition.
+
+No Canon change was necessary — both types were already specified; this phase
+only implemented the code the glossary and ADR-005 already anticipated.
+
+### Family identity preservation
+
+Verified structurally, not just by convention: `addMember`, `removeMember` and
+`reorderMembers` all return `void` and never construct a new Family UUID; the
+one Entity created at `createFamily` is the only Family Entity that ever
+exists for that grouping. Tests 4–8 assert `family.id` is unchanged across
+every edit type.
+
+### Persistence
+
+No new index was needed. The existing `ent_by_role_lifecycle` index
+(`[role, lifecycleState, createdAt, id]`) already covers listing Families
+(`role='grouping'`) and DNA Packs (`role='publication'`) directly — "do not
+redesign RecordStore" was satisfied automatically rather than by restraint.
+Family size in this phase is small by design (a curated set an artist
+listens through, not a database), so ordered members are read via
+`adjacencyByTarget` and sorted client-side rather than requiring a new
+order-aware index.
+
+SQLite/IndexedDB equivalence for the Family path (creation, reorder,
+persistence) is covered by test 10 rather than a new conformance-suite
+addition — the existing suite already proves the adapters agree on ordering,
+adjacency and pagination in general; this phase only needed to confirm Family
+specifically exercises that already-proven path correctly, which it does.
+
+### DNA Pack content and versioning
+
+Audio bytes pass through unchanged — `content.get(hash)` for each member,
+zero transformation. Every export is already canonical PCM16 WAV regardless of
+whether the source arrived as a microphone capture, WAV, AIFF or M4A import:
+verified byte-for-byte against the stored content hash (test 15).
+
+Versioning is a plain incrementing integer per Family, computed by counting
+existing `published_from` relationships targeting that Family at publish time
+(`count + 1`) — no counter to keep in sync, no race between two fields
+disagreeing. Chosen over semver-style versions because nothing in this phase
+produces a meaningful minor/patch distinction; a pack is either version N or
+it isn't yet.
+
+Manifest schema (`schemaVersion: 1`): pack id/version, family id, family
+revision, family name, publication timestamp, publishing Agent, and one entry
+per member with order, exported filename, canonical content hash, duration,
+sample rate, channels, origin, and ResearchConfiguration id/version/seed when
+the member was itself an exploration result. Deliberately excludes the
+Knowledge Graph, Agent records beyond the publishing Agent's id, and any
+internal Relationship — "a portable artifact contract, not a database
+backup," per the brief.
+
+### Export mechanism
+
+A hand-rolled, dependency-free, deterministic ZIP writer (STORE method, no
+compression — canonical WAV is already compact PCM16, and a compression
+library would be the one new dependency this whole project has avoided).
+Verified against the system `unzip` binary, not just round-tripped through its
+own reader: `unzip -l` and `unzip -p` both read the generated archive
+correctly. Identical inputs produce byte-identical ZIP output — no wall-clock
+timestamps, a fixed DOS epoch instead.
+
+Browser delivery: an anchor-element download (`URL.createObjectURL` +
+synthetic click), which always exists as a plain download path per the brief.
+`navigator.share()` with files is offered as an *additional* action only when
+`canShare({ files })` reports true at runtime — never required, matching the
+capability-detection pattern already established for recording formats.
+
+### Files added
+
+`src/format/zip.ts`, `src/domain/alchemy/family-service.ts`,
+`src/domain/alchemy/dna-pack.ts`, `tests/integration/family-and-dna-pack.test.ts`.
+
+### Files modified
+
+`src/domain/alchemy/vocabulary.ts` (Family/DNA Pack types, roles,
+relationships, transition kinds), `src/web/lab.ts` (FamilyService wiring and
+seven new WebLab methods), `web/index.html` (curation UI, Family detail
+overlay, material picker overlay), `web/app.js` (selection mode, Family
+rendering, playback, reorder, publish/download/share).
+
+### Artistic validation — not yet collected
+
+The questions the brief asks (does grouping feel natural, is audition fast
+enough, does a Family feel like a meaningful unit, is a DNA Pack immediately
+usable outside Alchemy) require the physical checklist below. Nothing here is
+measured evidence about creative quality — only that the mechanism works.
