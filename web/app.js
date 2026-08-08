@@ -9,6 +9,7 @@
  * Everything runs locally. No server, no sync, no account.
  */
 import { openLab } from './lab.js';
+import { DnaPackExportController } from './export-orchestrator.js';
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -18,6 +19,30 @@ const state = {
   openFamilyId: null, playingMaterialId: null, playbackAudio: null,
   pickerSelected: new Set(),
 };
+
+/**
+ * One controller for the app session. It is the ONLY place that calls
+ * navigator.share, the ONLY place that calls the download anchor, and the
+ * ONLY place that decides whether Publish and Share are mutually exclusive —
+ * see src/web/export-orchestrator.ts for why this exists.
+ */
+const exportController = new DnaPackExportController({
+  download: (filename, bytes, mime) => downloadBlob(filename, bytes, mime),
+  share: async (filename, bytes, mime) => {
+    try {
+      await navigator.share({ files: [new File([bytes], filename, { type: mime })], title: filename });
+      return 'shared';
+    } catch (err) {
+      if (err && err.name === 'AbortError') return 'cancelled';
+      throw err;
+    }
+  },
+  canShareFiles: (filename, bytes, mime) => {
+    if (!navigator.share || !navigator.canShare) return false;
+    try { return navigator.canShare({ files: [new File([bytes], filename, { type: mime })] }); }
+    catch { return false; }
+  },
+});
 
 function toast(message) {
   const el = $('toast');
@@ -286,12 +311,16 @@ async function renderFamilies() {
 async function openFamily(familyId) {
   state.openFamilyId = familyId;
   stopPlayback();
+  exportController.reset(); // no stale shareable artifact from a previous Family
+  $('family-share-row').hidden = true;
   $('family-detail').hidden = false;
   await renderFamilyDetail();
 }
 
 function closeFamily() {
   stopPlayback();
+  exportController.reset();
+  $('family-share-row').hidden = true;
   state.openFamilyId = null;
   $('family-detail').hidden = true;
 }
@@ -401,21 +430,48 @@ async function renderPicker() {
 }
 
 async function publishFamily() {
+  // Single-flight guard: a duplicate tap while the first press is still in
+  // flight is ignored outright, not queued — see export-orchestrator.ts.
+  if (exportController.isPublishing()) return;
+  $('family-publish').disabled = true;
   toast('Publicando…');
   try {
-    const { filename, zip } = await state.lab.publishFamily(state.openFamilyId);
-    downloadBlob(filename, zip, 'application/zip');
-    if (navigator.share && navigator.canShare) {
-      const file = new File([zip], filename, { type: 'application/zip' });
-      if (navigator.canShare({ files: [file] })) {
-        try { await navigator.share({ files: [file], title: filename }); }
-        catch { /* user cancelled share; the download already happened */ }
-      }
-    }
+    const familyId = state.openFamilyId;
+    // publishAndDownload calls the canonical publish action exactly once and
+    // performs exactly one download. It never calls navigator.share.
+    const artifact = await exportController.publishAndDownload(
+      familyId, () => state.lab.publishFamily(familyId));
+    if (!artifact) return; // a publish was already in flight; nothing to do
     await renderFamilies();
-    toast('DNA Pack publicado');
+    updateShareAvailability();
+    toast(`DNA Pack v${artifact.manifest.packVersion} descargado`);
   } catch (err) {
     toast(`No se pudo publicar: ${err.message}`);
+  } finally {
+    $('family-publish').disabled = false;
+  }
+}
+
+function updateShareAvailability() {
+  const row = $('family-share-row');
+  row.hidden = !exportController.canShareLast(state.openFamilyId);
+}
+
+async function shareLastPack() {
+  if (exportController.isSharing()) return; // independent single-flight guard
+  $('family-share').disabled = true;
+  try {
+    // Reuses the bytes from the last publish for this Family. Never
+    // re-publishes (no new Published Artifact) and never downloads,
+    // regardless of whether the share succeeds, is cancelled, or fails.
+    const outcome = await exportController.shareLast(state.openFamilyId);
+    if (outcome === 'shared') toast('Compartido');
+    else if (outcome === 'cancelled') { /* user cancelled the native sheet; do nothing */ }
+    else if (outcome === 'unavailable') toast('Nada para compartir todavía');
+  } catch (err) {
+    toast(`No se pudo compartir: ${err.message}`);
+  } finally {
+    $('family-share').disabled = false;
   }
 }
 
@@ -599,6 +655,7 @@ function wire() {
   $('family-back').onclick = closeFamily;
   $('family-add-members').onclick = openMaterialPicker;
   $('family-publish').onclick = publishFamily;
+  $('family-share').onclick = shareLastPack;
 
   $('family-members').onclick = async (e) => {
     const d = e.target.dataset || {};

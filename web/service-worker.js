@@ -12,7 +12,7 @@
  */
 const CACHE = 'alchemy-shell-v1';
 const SHELL = [
-  './', './index.html', './app.js', './lab.js', './manifest.webmanifest',
+  './', './index.html', './app.js', './lab.js', './export-orchestrator.js', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
 ];
 
