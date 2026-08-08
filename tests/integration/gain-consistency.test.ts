@@ -196,8 +196,8 @@ test('12. Retain provenance records the new configuration version', async () => 
     materialId: src.id, configuration: DEFAULT_FRAGMENT_EXPLORATION,
     researchIntentId: intent.id, baseSeed: 42, variationCount: 4, agentId: artist.id });
   const r = await service.retain(selectVariation(set, 0).preview, artist.id);
-  assert.equal(r.material.attributes.configurationVersion, '1.1.0');
-  assert.equal(DEFAULT_FRAGMENT_EXPLORATION.version, '1.1.0');
+  assert.equal(r.material.attributes.configurationVersion, DEFAULT_FRAGMENT_EXPLORATION.version,
+    'Retain provenance records whichever version is currently the default');
   await records.close();
 });
 
@@ -216,7 +216,8 @@ test('13. existing manifests recorded at 1.0.0 remain retainable', () => {
 
   // Omitting the version resolves to the current default, not 1.0.0.
   const defaulted = configurationById('fragment-exploration-v1');
-  assert.equal(defaulted.version, '1.1.0');
+  assert.equal(defaulted.version, DEFAULT_FRAGMENT_EXPLORATION.version);
+  assert.notEqual(defaulted.version, '1.0.0');
 
   assert.throws(() => configurationById('fragment-exploration-v1', '9.9.9'),
     /unknown research configuration version/);
