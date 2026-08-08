@@ -567,3 +567,134 @@ channel-ratio preservation, Retain provenance recording `1.1.0`, and
   *called* in a boot probe. Recorded because it is the same category of gap
   as M-10/M-13/M-16: a check that passes without exercising the actual
   runtime path is not evidence the path works.
+
+## Slice-boundary micro-fade refinement (fragment-exploration-v1@1.2.0)
+
+**Artist feedback** (kept separate from measured evidence): "Exploration
+variations are working well after the gain refinement. The remaining issue is
+that some fragment cuts are perceptually too abrupt. A micro-fade is desired
+at slice boundaries, similar to de-click treatment previously needed in
+Freeze/Slice workflows."
+
+### Original boundary behavior
+
+Fragment pieces (sliced, optionally reversed, gain-shaped) are concatenated in
+permuted order, with occasional silence inserted between them. Every
+concatenation point — fragment-to-fragment directly, fragment-to-silence, and
+silence-to-fragment — was a raw sample abutment: whatever value ended one
+piece sat directly next to whatever value began the next, with no treatment.
+
+### Baseline discontinuity measurement
+
+Reference corpus: 8 variations of `fragment-exploration-v1@1.1.0`, same
+5000-frame synthetic source, base seed 1000. Metric:
+`abs(lastSample(pieceA) − firstSample(pieceB)) / 32768` per boundary.
+
+- **82 boundaries** across the 8 variations
+- Mean discontinuity: **0.0615** (6.15% of full scale)
+- Max discontinuity: **0.3121** (31% of full scale)
+- Exceeding a 0.05 diagnostic threshold: **32 of 82 (39%)**
+- This is diagnostic only — it does not define artistic quality, but it does
+  confirm the artist's perception was not imagined: real, large, untreated
+  jumps exist at nearly 4 in 10 boundaries.
+
+### Fade model chosen
+
+`PREVIEW_BOUNDARY_FADE_MS = 5`, converted per source sample rate:
+`fadeFramesForSampleRate(sr) = round(sr * 5 / 1000)` — 221 frames at 44.1kHz,
+exactly 240 at 48kHz. Verified sample-rate independence in perceptual duration
+rather than a hardcoded frame count.
+
+**Short-fragment rule:** each side of the fade is independently capped at
+`floor(fragmentFrameCount / 4)` inside `applyBoundaryFade` itself — the single
+source of truth, not duplicated at call sites. This guarantees fade-in and
+fade-out can never overlap (their combined maximum is at most half the
+fragment) and lets very short fragments degrade gracefully to zero fade rather
+than being rejected or producing an error.
+
+**Boundary rule, uniform across all three shapes:** every non-silence piece
+fades out unless it is the very last element of the Preview, and fades in
+unless it is the very first. This one rule, applied per-piece by only asking
+"does a neighbour exist," produces the correct treatment for all three
+boundary shapes without special-casing any of them:
+
+- fragment → fragment (no gap): both pieces fade, toward each other.
+- fragment → silence: only the outgoing fragment fades (toward the existing
+  zero-valued silence, which is never itself modified).
+- silence → fragment: only the incoming fragment fades (from zero).
+
+Reversed fragments receive identical treatment — the fade is applied after
+reversal and gain shaping, on whatever samples the piece contains by then; it
+has no awareness of whether the piece was reversed.
+
+Curve: simple linear ramp, frame-indexed, same coefficient applied to every
+channel of a frame (`out[frame][channel] = round(sample * gain)`), so stereo
+balance cannot shift.
+
+### Final operation order for 1.2.0
+
+```
+fragment → permute/select → reverse where selected → per-fragment gain shaping
+  → boundary micro-fade (new)
+  → concatenate with silence exactly as before
+  → measure completed Preview energy
+  → 1.1.0 gain-consistency correction (65% pull, ±4dB, peak safety) — unchanged
+  → canonical WAV
+```
+
+This matches the recommended ordering exactly: the fade operates on each
+piece before concatenation and before the Preview-level gain measurement, so
+the existing 1.1.0 correction still measures (and corrects) the final,
+already-faded signal — consistent with how it already treats whatever bytes
+reach it.
+
+### Configuration version
+
+`fragment-exploration-v1@1.2.0`. `1.0.0` and `1.1.0` are byte-for-byte
+unchanged — both `renderVariation` (1.0.0/1.1.0's shared fragment-shaping
+function) and `renderVariationV1_1` were not modified; `renderVariationV1_2`
+is a new, separate function that duplicates the fragment-assembly loop rather
+than parametrizing the existing one, specifically so a bug in the new fade
+logic has zero path to affect the older versions. `DEFAULT_FRAGMENT_EXPLORATION`
+now points at 1.2.0; `configurationById(id)` without a version resolves there,
+`configurationById(id, '1.0.0')` and `(id, '1.1.0')` still resolve their exact
+original configurations.
+
+### Before / after, same reference corpus
+
+| | 1.1.0 (no fade) | 1.2.0 (faded) |
+|---|---|---|
+| Boundary discontinuity, mean | 0.0615 | 0.0008 |
+| Boundary discontinuity, max | 0.3121 | 0.0078 |
+| Exceeding 0.05 threshold | 32 / 82 (39%) | 0 / 82 (0%) |
+| Output duration | unchanged | unchanged (bit-for-bit frame counts) |
+| RMS spread across 8 variations | 0.0220 | 0.0219 |
+| Clipped samples | 0 | 0 |
+| Unique output hashes | 8 | 8 |
+
+Discontinuity dropped by roughly 98% (mean) and 97% (max) with duration
+exactly preserved, gain-consistency spread essentially unchanged (within noise
+of the fade itself very slightly reducing energy near boundaries), zero
+clipping, and full variation preserved — no two variations collapsed toward
+the same result.
+
+### Tests
+
+22 new: 1.0.0 and 1.1.0 hash preservation, 1.2.0 determinism, fade-duration
+conversion at 44.1kHz and 48kHz, frame alignment, uniform per-frame
+multichannel coefficient, all three boundary shapes (fragment-fragment,
+fragment-silence, silence-fragment), reversed-fragment equivalence,
+short-fragment safe reduction, non-overlap of fade-in/fade-out, unchanged
+duration and channel count, zero clipping, gain-consistency envelope
+preserved, same-seed determinism, cross-seed distinctness, exact-version
+retainability of 1.0.0/1.1.0, 1.2.0 Retain provenance, and a measured-evidence
+test reproducing the ~98%/~97% discontinuity reduction directly (not just
+asserted in prose).
+
+### Verified through the real deployable path
+
+`node build.mjs` produced the browser bundle; `openLab()` was called against
+that built `dist/lab.js` with `globalThis.Buffer` deleted (the condition
+Safari presents) and reported `explorationConfiguration:
+{"id":"fragment-exploration-v1","version":"1.2.0"}`. Full IndexedDB
+integration suite green against the same bundle path.
