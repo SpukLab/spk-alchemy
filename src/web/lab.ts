@@ -16,6 +16,9 @@ import type { RecorderCapability } from '../adapters/web-audio/capture-format-po
 import { decodeImportedFile } from '../adapters/web-audio/import-decode-policy.ts';
 import { ANALYZER_V1 } from '../audio/analyzer.ts';
 import type { Entity } from '../core/primitives.ts';
+import { FamilyService } from '../domain/alchemy/family-service.ts';
+import type { DnaPackManifest, FamilyMember } from '../domain/alchemy/family-service.ts';
+import { buildDnaPackZip, packDirectoryName } from '../domain/alchemy/dna-pack.ts';
 
 /**
  * Browser composition root.
@@ -24,10 +27,21 @@ import type { Entity } from '../core/primitives.ts';
  * is the same canonical core, the same domain service and the same queries the
  * Node CLI uses — which is the whole point of the portable persistence contract.
  */
+export interface FamilyExport { filename: string; zip: Uint8Array; manifest: DnaPackManifest }
+
 export interface WebLab {
   recorderCapability: RecorderCapability;
   /** Which exploration configuration new explorations currently use. */
   explorationConfiguration: Pick<ResearchConfiguration, 'id' | 'version'>;
+  // Family / DNA Pack curation
+  createFamily(name: string, materialIds: readonly string[]): Promise<Entity>;
+  listFamilies(): Promise<Entity[]>;
+  familyMembers(familyId: string): Promise<FamilyMember[]>;
+  addFamilyMember(familyId: string, materialId: string): Promise<void>;
+  removeFamilyMember(familyId: string, materialId: string): Promise<void>;
+  reorderFamily(familyId: string, orderedMaterialIds: readonly string[]): Promise<void>;
+  publishFamily(familyId: string): Promise<FamilyExport>;
+  familyPackCount(familyId: string): Promise<number>;
   /** Microphone capture: bytes always come from the CaptureFormatPolicy's chosen encoder. */
   ingest(input: ArrayBuffer, filename: string): Promise<Entity>;
   /** File import: bytes are of unknown, unverified origin. Decode is the only gate. */
@@ -53,6 +67,7 @@ export async function openWebLab(): Promise<WebLab> {
   registerAlchemyVocabulary(registry);       // no View Registry: data valid without it
   const service = new AlchemyService(records, content, registry);
   const queries = new AlchemyQueries(records, content);
+  const families = new FamilyService(records, content, registry);
 
   const artist = await service.registerAgent({ kind: 'human', name: 'artist', version: '1' });
   const analyzer = await service.registerAgent({
@@ -135,6 +150,39 @@ export async function openWebLab(): Promise<WebLab> {
     },
     async audioFor(material) {
       return content.get(String(material.attributes.contentHash));
+    },
+
+    async createFamily(name, materialIds) {
+      return families.createFamily({ name, materialIds, agentId: artist.id });
+    },
+    async listFamilies() {
+      return families.listFamilies();
+    },
+    async familyMembers(familyId) {
+      return families.listMembers(familyId);
+    },
+    async addFamilyMember(familyId, materialId) {
+      await families.addMember(familyId, materialId, artist.id);
+    },
+    async removeFamilyMember(familyId, materialId) {
+      await families.removeMember(familyId, materialId, artist.id);
+    },
+    async reorderFamily(familyId, orderedMaterialIds) {
+      await families.reorderMembers(familyId, orderedMaterialIds, artist.id);
+    },
+    async publishFamily(familyId) {
+      const { manifest } = await families.publish(familyId, artist.id);
+      const audioByMaterialId = new Map<string, Uint8Array>();
+      for (const member of manifest.members) {
+        const bytes = await families.audioFor(member.materialId);
+        if (!bytes) throw new Error(`missing audio for material ${member.materialId}`);
+        audioByMaterialId.set(member.materialId, bytes);
+      }
+      const zip = buildDnaPackZip(manifest, audioByMaterialId);
+      return { filename: `${packDirectoryName(manifest)}.zip`, zip, manifest };
+    },
+    async familyPackCount(familyId) {
+      return (await families.listPacks(familyId)).length;
     },
   };
 }

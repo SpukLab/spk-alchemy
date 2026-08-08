@@ -14,6 +14,9 @@ const $ = (id) => document.getElementById(id);
 const state = {
   lab: null, capture: null, source: null, previews: [],
   tab: 'promoted', recorder: null, stream: null, startedAt: 0, timerId: 0,
+  curating: false, selected: new Set(),
+  openFamilyId: null, playingMaterialId: null, playbackAudio: null,
+  pickerSelected: new Set(),
 };
 
 function toast(message) {
@@ -206,13 +209,29 @@ async function renderMaterials() {
   const items = await state.lab.materials(state.tab);
   if (items.length === 0) {
     host.innerHTML = `<div class="empty">Nada aquí todavía</div>`;
+    updateCreateFamilyBar();
     return;
   }
   host.innerHTML = '';
+  const curatingHere = state.curating && state.tab === 'promoted';
   for (const m of items) {
     const card = document.createElement('div');
     card.className = 'card' + (state.source?.id === m.id ? ' sel' : '');
-    const actions = state.tab === 'retained'
+    let actions;
+    if (curatingHere) {
+      const checked = state.selected.has(m.id) ? 'checked' : '';
+      card.innerHTML = `
+        <label class="pick" style="display:flex;align-items:center;gap:10px">
+          <input type="checkbox" data-select="${m.id}" ${checked}>
+          <span style="flex:1">
+            <h3 style="margin:0">${escapeHtml(m.attributes.filename || 'Material')}</h3>
+            <div class="meta">${describe(m)}</div>
+          </span>
+        </label>`;
+      host.appendChild(card);
+      continue;
+    }
+    actions = state.tab === 'retained'
       ? `<button class="keep" data-promote="${m.id}">Promover</button>
          <button class="drop" data-reject="${m.id}">Rechazar</button>`
       : state.tab === 'promoted'
@@ -225,6 +244,187 @@ async function renderMaterials() {
       <div class="acts">${actions}</div>`;
     host.appendChild(card);
   }
+  updateCreateFamilyBar();
+}
+
+function updateCreateFamilyBar() {
+  const bar = $('create-family-bar');
+  if (!state.curating || state.tab !== 'promoted' || state.selected.size === 0) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  bar.textContent = `Crear Family (${state.selected.size})`;
+}
+
+// ---- Families ---------------------------------------------------------------
+
+async function renderFamilies() {
+  const host = $('families');
+  const items = await state.lab.listFamilies();
+  if (items.length === 0) {
+    host.innerHTML = `<div class="empty">Todavía no hay families</div>`;
+    return;
+  }
+  host.innerHTML = '';
+  for (const f of items) {
+    const members = await state.lab.familyMembers(f.id);
+    const packCount = await state.lab.familyPackCount(f.id);
+    const card = document.createElement('div');
+    card.className = 'fam-card';
+    card.innerHTML = `
+      <div class="info">
+        <h3>${escapeHtml(f.attributes.name)}</h3>
+        <div class="meta">${members.length} miembro${members.length === 1 ? '' : 's'}` +
+          `${packCount > 0 ? ` · ${packCount} pack${packCount === 1 ? '' : 's'}` : ''}</div>
+      </div>
+      <button data-open-family="${f.id}">Abrir</button>`;
+    host.appendChild(card);
+  }
+}
+
+async function openFamily(familyId) {
+  state.openFamilyId = familyId;
+  stopPlayback();
+  $('family-detail').hidden = false;
+  await renderFamilyDetail();
+}
+
+function closeFamily() {
+  stopPlayback();
+  state.openFamilyId = null;
+  $('family-detail').hidden = true;
+}
+
+async function renderFamilyDetail() {
+  const family = await state.lab.listFamilies().then((fs) => fs.find((f) => f.id === state.openFamilyId));
+  if (!family) { closeFamily(); return; }
+  $('family-detail-name').textContent = family.attributes.name;
+  const members = await state.lab.familyMembers(family.id);
+  $('family-detail-meta').textContent =
+    `${members.length} miembro${members.length === 1 ? '' : 's'}` +
+    (family.attributes.note ? ` · ${family.attributes.note}` : '');
+
+  const host = $('family-members');
+  if (members.length === 0) {
+    host.innerHTML = `<div class="empty">Sin miembros — agregá materiales</div>`;
+    return;
+  }
+  const materials = await Promise.all(members.map((m) => state.lab.material(m.materialId)));
+  host.innerHTML = '';
+  members.forEach((member, index) => {
+    const material = materials[index];
+    const row = document.createElement('div');
+    row.className = 'member' + (state.playingMaterialId === member.materialId ? ' playing' : '');
+    row.innerHTML = `
+      <div class="info">
+        <h3>${escapeHtml(material?.attributes.filename || 'Material')}</h3>
+      </div>
+      <div class="ctl">
+        <button data-play-member="${member.materialId}">${state.playingMaterialId === member.materialId ? '⏸' : '▶'}</button>
+        <button data-up="${member.materialId}" ${index === 0 ? 'disabled' : ''}>↑</button>
+        <button data-down="${member.materialId}" ${index === members.length - 1 ? 'disabled' : ''}>↓</button>
+        <button data-remove-member="${member.materialId}">✕</button>
+      </div>`;
+    host.appendChild(row);
+  });
+}
+
+function stopPlayback() {
+  state.playbackAudio?.pause();
+  state.playbackAudio = null;
+  state.playingMaterialId = null;
+}
+
+async function playMember(materialId) {
+  if (state.playingMaterialId === materialId) { stopPlayback(); await renderFamilyDetail(); return; }
+  stopPlayback();
+  const bytes = await state.lab.audioFor(await state.lab.material(materialId));
+  if (!bytes) { toast('No se pudo reproducir'); return; }
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+  const audio = new Audio(url);
+  audio.play();
+  audio.onended = async () => { stopPlayback(); await renderFamilyDetail(); };
+  state.playbackAudio = audio;
+  state.playingMaterialId = materialId;
+  await renderFamilyDetail();
+}
+
+async function moveMember(materialId, direction) {
+  const members = await state.lab.familyMembers(state.openFamilyId);
+  const ids = members.map((m) => m.materialId);
+  const i = ids.indexOf(materialId);
+  const j = i + direction;
+  if (j < 0 || j >= ids.length) return;
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  await state.lab.reorderFamily(state.openFamilyId, ids);
+  await renderFamilyDetail();
+}
+
+async function removeMember(materialId) {
+  await state.lab.removeFamilyMember(state.openFamilyId, materialId);
+  stopPlayback();
+  await renderFamilyDetail();
+  await renderFamilies();
+}
+
+async function openMaterialPicker() {
+  state.pickerSelected = new Set();
+  $('material-picker').hidden = false;
+  await renderPicker();
+}
+
+async function renderPicker() {
+  const host = $('picker-list');
+  const existing = new Set((await state.lab.familyMembers(state.openFamilyId)).map((m) => m.materialId));
+  const promoted = await state.lab.materials('promoted');
+  const candidates = promoted.filter((m) => !existing.has(m.id));
+  if (candidates.length === 0) {
+    host.innerHTML = `<div class="empty">No hay materiales promovidos disponibles</div>`;
+    return;
+  }
+  host.innerHTML = '';
+  for (const m of candidates) {
+    const card = document.createElement('div');
+    card.className = 'card pick';
+    const checked = state.pickerSelected.has(m.id) ? 'checked' : '';
+    card.innerHTML = `
+      <label class="pick" style="display:flex;align-items:center;gap:10px;width:100%">
+        <input type="checkbox" data-pick="${m.id}" ${checked}>
+        <span style="flex:1">
+          <h3 style="margin:0">${escapeHtml(m.attributes.filename || 'Material')}</h3>
+          <div class="meta">${describe(m)}</div>
+        </span>
+      </label>`;
+    host.appendChild(card);
+  }
+}
+
+async function publishFamily() {
+  toast('Publicando…');
+  try {
+    const { filename, zip } = await state.lab.publishFamily(state.openFamilyId);
+    downloadBlob(filename, zip, 'application/zip');
+    if (navigator.share && navigator.canShare) {
+      const file = new File([zip], filename, { type: 'application/zip' });
+      if (navigator.canShare({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: filename }); }
+        catch { /* user cancelled share; the download already happened */ }
+      }
+    }
+    await renderFamilies();
+    toast('DNA Pack publicado');
+  } catch (err) {
+    toast(`No se pudo publicar: ${err.message}`);
+  }
+}
+
+function downloadBlob(filename, bytes, mime) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
@@ -360,8 +560,69 @@ function wire() {
       const m = await state.lab.material(d.use);
       if (m) { selectSource(m); $('explore-section').scrollIntoView({ behavior: 'smooth' }); }
     }
+    if (d.promote || d.reject) await renderMaterials();
+  };
+  $('materials').addEventListener('change', (e) => {
+    const id = e.target.dataset?.select;
+    if (id === undefined) return;
+    if (e.target.checked) state.selected.add(id); else state.selected.delete(id);
+    updateCreateFamilyBar();
+  });
+
+  $('curate-toggle').onclick = async () => {
+    state.curating = !state.curating;
+    state.selected.clear();
+    $('curate-toggle').textContent = state.curating ? 'Cancelar selección' : 'Seleccionar para Family';
     await renderMaterials();
   };
+
+  $('create-family-bar').onclick = async () => {
+    const name = (prompt('Nombre de la Family:') || '').trim();
+    if (!name) return;
+    try {
+      await state.lab.createFamily(name, [...state.selected]);
+      state.curating = false; state.selected.clear();
+      $('curate-toggle').textContent = 'Seleccionar para Family';
+      await renderMaterials();
+      await renderFamilies();
+      toast('Family creada');
+    } catch (err) {
+      toast(`No se pudo crear: ${err.message}`);
+    }
+  };
+
+  $('families').onclick = async (e) => {
+    const id = e.target.dataset?.openFamily;
+    if (id) await openFamily(id);
+  };
+
+  $('family-back').onclick = closeFamily;
+  $('family-add-members').onclick = openMaterialPicker;
+  $('family-publish').onclick = publishFamily;
+
+  $('family-members').onclick = async (e) => {
+    const d = e.target.dataset || {};
+    if (d.playMember) await playMember(d.playMember);
+    if (d.up) await moveMember(d.up, -1);
+    if (d.down) await moveMember(d.down, 1);
+    if (d.removeMember) await removeMember(d.removeMember);
+  };
+
+  $('picker-back').onclick = () => { $('material-picker').hidden = true; };
+  $('picker-done').onclick = async () => {
+    for (const materialId of state.pickerSelected) {
+      try { await state.lab.addFamilyMember(state.openFamilyId, materialId); }
+      catch (err) { toast(`No se pudo agregar: ${err.message}`); }
+    }
+    $('material-picker').hidden = true;
+    await renderFamilyDetail();
+    await renderFamilies();
+  };
+  $('picker-list').addEventListener('change', (e) => {
+    const id = e.target.dataset?.pick;
+    if (id === undefined) return;
+    if (e.target.checked) state.pickerSelected.add(id); else state.pickerSelected.delete(id);
+  });
 
   for (const tab of document.querySelectorAll('[role=tab]')) {
     tab.onclick = async () => {
@@ -415,6 +676,7 @@ async function boot() {
       $('diag-toggle').textContent = 'Ocultar compatibilidad';
     }
     await renderMaterials();
+    await renderFamilies();
   } catch (err) {
     $('status').textContent = 'error';
     toast(`No se pudo abrir el laboratorio: ${err.message}`);
