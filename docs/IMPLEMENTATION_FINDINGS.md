@@ -913,3 +913,108 @@ no imports of its own — folding it into `lab.js` was unnecessary). Loaded both
 deleted and mock `download`/`share` functions: `publishAndDownload` produced
 exactly one download and zero shares; a subsequent `shareLast` produced
 exactly one share and no additional download.
+
+## iPhone UX refinement: Family selection, Material audition, lineage colors
+
+**Physical artist feedback:**
+- Family selection works but currently requires an unnecessary manual switch to Promovidos.
+- Material cards need direct playback because the artist sometimes works with samples without remembering their sound.
+- A visual lineage marker would reduce cognitive load when many related variations exist.
+
+Classified as UX/artistic-use evidence, not architectural requirements — nothing
+here changed a canonical contract.
+
+### 1. Family selection friction
+
+Root cause: activating selection mode toggled `state.curating` without also
+switching `state.tab`, so the artist had to tap "Promovidos" manually every
+time. Fixed: the toggle handler now sets `state.tab = 'promoted'` whenever
+selection is activated from a different tab. Deactivating selection makes no
+change to the tab — a reversible, minor decision, since returning to whatever
+the artist was looking at is the less surprising default.
+
+### 2. Material card playback
+
+Reused the existing single-player infrastructure from the Family screen
+(`stopPlayback`/audio element) instead of building a second player: the
+Family screen's `playMember` became `togglePlayMaterial`, called from both the
+Materials list and the Family screen, with a shared `refreshPlaybackViews()`
+that re-renders whichever view is currently visible.
+
+**Playback source resolution:** always `content.get(material.attributes.contentHash)`
+— the same canonical Content path Retain and DNA Pack export already use.
+Never derived from Preview staging: a Preview has no persistent id to resolve
+by the time the artist is looking at a Material card. Verified this survives a
+store reopen (test 7) using only persisted data, no live session state.
+
+**Rejected Materials are included**, since rejection never deletes canonical
+Content — `material(id)` now checks promoted, retained and rejected in that
+order.
+
+**Single active player:** starting playback always calls `stopPlayback()`
+first, unconditionally, before creating a new `Audio` element — verified by a
+structural test locating that ordering in the actual function body, since a
+DOM-level unit test would have meant adding a testing dependency (jsdom) this
+project has deliberately avoided everywhere else. Leaving a tab stops playback
+too, so navigating never leaves overlapping audio running.
+
+**Hit-target separation:** the Play button is a DOM sibling of the selection
+`<label>`, never nested inside it, so tapping Play can never also toggle the
+checkbox through native label semantics — and the materials click handler
+resolves and returns on a play tap before any selection-related branch can
+run. Verified structurally against the actual rendered markup and handler
+source, not just visually.
+
+### 3. Lineage colors
+
+`src/domain/alchemy/lineage.ts` — pure derivation, no persistence, no
+canonical primitive, no ADR:
+
+- **Root resolution:** a Material with zero ancestors is its own root;
+  otherwise the ancestor at maximum depth in the existing `ancestors()`
+  traversal is the root (that traversal already orders by depth). No new
+  query was needed.
+- **Multi-root fallback (documented per the brief's explicit ask):** the
+  current exploration engine only ever derives from one input Material at a
+  time, so every derived Material has exactly one ancestry chain in practice.
+  The general case is still handled: if the ancestor set contains more than
+  one node at the maximum depth (multiple independent roots), candidates are
+  ordered by `(depth desc, id asc)` and the first is used, with the neutral
+  `MULTI_ROOT_COLOR` (`#8b8b96`, matching `--dim`) used instead of guessing a
+  blend. Verified deterministic across repeated calls with an injected
+  synthetic multi-parent case, since the current DSP cannot produce one
+  naturally.
+- **Palette:** 10 hex colors chosen for the dark UI, deliberately distinct
+  from `--accent` (promoted tab / explore / status) and `--ok`/`--danger`
+  (the keep/reject buttons) — a lineage color must never read as a lifecycle
+  signal.
+- **Mapping:** `sha256(rootId)` (the same portable hashing already used for
+  content identity), first 4 bytes as a uint32, mod palette size. Deterministic
+  by construction; no persistence needed, so none was added — the brief's
+  "prefer derivation unless persistence is genuinely necessary" applied
+  cleanly here since the root id alone is sufficient input.
+- **Independence verified explicitly:** Promote, Reject, Family membership and
+  DNA Pack publication all leave a Material's resolved lineage color
+  unchanged — each has a dedicated test.
+
+**Visual presentation:** a small colored dot (9px) before the material name,
+on both Material cards and Family member rows. No card is filled with color,
+no lifecycle button was recolored, no gradient or multi-lineage blending.
+
+### Files added
+
+`src/domain/alchemy/lineage.ts`, `tests/integration/lineage-color.test.ts`,
+`tests/integration/material-playback-and-selection.test.ts`.
+
+### Files modified
+
+`src/web/lab.ts` (`lineageColor` method, `material()` extended to include
+rejected), `web/app.js` (auto-switch on selection activation, unified player,
+lineage dots, play buttons, hit-target separation), `web/index.html` (CSS for
+dots, play buttons, pick-row layout).
+
+### No canonical change
+
+No structural primitive, no persistence field, no schema change, no ADR. The
+existing `ancestors()` query and the existing content-addressed `ContentStore`
+were sufficient for both features.
