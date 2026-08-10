@@ -237,26 +237,38 @@ async function renderMaterials() {
     updateCreateFamilyBar();
     return;
   }
+  // Fetch lineage colors in parallel: each is a small bounded ancestors query,
+  // never a canonical write, never dependent on lifecycle or Family state.
+  const colors = await Promise.all(items.map((m) => state.lab.lineageColor(m.id)));
+
   host.innerHTML = '';
   const curatingHere = state.curating && state.tab === 'promoted';
-  for (const m of items) {
+  items.forEach((m, i) => {
     const card = document.createElement('div');
     card.className = 'card' + (state.source?.id === m.id ? ' sel' : '');
-    let actions;
+    const playing = state.playingMaterialId === m.id;
+    // Play is always its own button, outside any <label>, so tapping it can
+    // never also toggle the selection checkbox in curating mode.
+    const playButton = `<button class="play-btn" data-play="${m.id}" aria-label="Reproducir">${playing ? '⏸' : '▶'}</button>`;
+    const dot = `<span class="lineage-dot" style="background:${colors[i]}" aria-hidden="true"></span>`;
+
     if (curatingHere) {
       const checked = state.selected.has(m.id) ? 'checked' : '';
       card.innerHTML = `
-        <label class="pick" style="display:flex;align-items:center;gap:10px">
-          <input type="checkbox" data-select="${m.id}" ${checked}>
-          <span style="flex:1">
-            <h3 style="margin:0">${escapeHtml(m.attributes.filename || 'Material')}</h3>
-            <div class="meta">${describe(m)}</div>
-          </span>
-        </label>`;
+        <div class="pick-row">
+          ${playButton}
+          <label class="pick">
+            <input type="checkbox" data-select="${m.id}" ${checked}>
+            <span style="flex:1">
+              <h3 style="margin:0">${dot}${escapeHtml(m.attributes.filename || 'Material')}</h3>
+              <div class="meta">${describe(m)}</div>
+            </span>
+          </label>
+        </div>`;
       host.appendChild(card);
-      continue;
+      return;
     }
-    actions = state.tab === 'retained'
+    const actions = state.tab === 'retained'
       ? `<button class="keep" data-promote="${m.id}">Promover</button>
          <button class="drop" data-reject="${m.id}">Rechazar</button>`
       : state.tab === 'promoted'
@@ -264,11 +276,16 @@ async function renderMaterials() {
            <button class="drop" data-reject="${m.id}">Rechazar</button>`
         : `<button class="keep" data-promote="${m.id}">Recuperar</button>`;
     card.innerHTML = `
-      <h3>${escapeHtml(m.attributes.filename || 'Material')}</h3>
-      <div class="meta">${describe(m)}</div>
+      <div class="pick-row">
+        ${playButton}
+        <span style="flex:1;min-width:0">
+          <h3>${dot}${escapeHtml(m.attributes.filename || 'Material')}</h3>
+          <div class="meta">${describe(m)}</div>
+        </span>
+      </div>
       <div class="acts">${actions}</div>`;
     host.appendChild(card);
-  }
+  });
   updateCreateFamilyBar();
 }
 
@@ -340,6 +357,7 @@ async function renderFamilyDetail() {
     return;
   }
   const materials = await Promise.all(members.map((m) => state.lab.material(m.materialId)));
+  const colors = await Promise.all(members.map((m) => state.lab.lineageColor(m.materialId)));
   host.innerHTML = '';
   members.forEach((member, index) => {
     const material = materials[index];
@@ -347,7 +365,7 @@ async function renderFamilyDetail() {
     row.className = 'member' + (state.playingMaterialId === member.materialId ? ' playing' : '');
     row.innerHTML = `
       <div class="info">
-        <h3>${escapeHtml(material?.attributes.filename || 'Material')}</h3>
+        <h3><span class="lineage-dot" style="background:${colors[index]}" aria-hidden="true"></span>${escapeHtml(material?.attributes.filename || 'Material')}</h3>
       </div>
       <div class="ctl">
         <button data-play-member="${member.materialId}">${state.playingMaterialId === member.materialId ? '⏸' : '▶'}</button>
@@ -365,19 +383,33 @@ function stopPlayback() {
   state.playingMaterialId = null;
 }
 
-async function playMember(materialId) {
-  if (state.playingMaterialId === materialId) { stopPlayback(); await renderFamilyDetail(); return; }
+/** Re-renders whichever playback-aware view is currently visible. */
+async function refreshPlaybackViews() {
+  if (!$('family-detail').hidden) await renderFamilyDetail();
+  else await renderMaterials();
+}
+
+/**
+ * One shared player for both the Materials list and the Family screen — see
+ * "reuse existing audio playback infrastructure" in the brief. Only one
+ * Material plays at a time: starting B always stops A first.
+ */
+async function togglePlayMaterial(materialId) {
+  if (state.playingMaterialId === materialId) { stopPlayback(); await refreshPlaybackViews(); return; }
   stopPlayback();
-  const bytes = await state.lab.audioFor(await state.lab.material(materialId));
+  const material = await state.lab.material(materialId);
+  const bytes = material && await state.lab.audioFor(material);
   if (!bytes) { toast('No se pudo reproducir'); return; }
   const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
   const audio = new Audio(url);
   audio.play();
-  audio.onended = async () => { stopPlayback(); await renderFamilyDetail(); };
+  audio.onended = async () => { stopPlayback(); await refreshPlaybackViews(); };
   state.playbackAudio = audio;
   state.playingMaterialId = materialId;
-  await renderFamilyDetail();
+  await refreshPlaybackViews();
 }
+// Kept as an alias so the Family-screen call sites read naturally.
+const playMember = togglePlayMaterial;
 
 async function moveMember(materialId, direction) {
   const members = await state.lab.familyMembers(state.openFamilyId);
@@ -610,6 +642,7 @@ function wire() {
 
   $('materials').onclick = async (e) => {
     const d = e.target.dataset || {};
+    if (d.play) { await togglePlayMaterial(d.play); return; } // separate hit target: never touches selection
     if (d.promote) { await state.lab.promote(d.promote); toast('Promovido'); }
     if (d.reject) { await state.lab.reject(d.reject); toast('Rechazado'); }
     if (d.use) {
@@ -629,6 +662,15 @@ function wire() {
     state.curating = !state.curating;
     state.selected.clear();
     $('curate-toggle').textContent = state.curating ? 'Cancelar selección' : 'Seleccionar para Family';
+    if (state.curating && state.tab !== 'promoted') {
+      // Promoted Materials are the only eligible candidates, so selection
+      // mode opens straight onto them instead of making the artist switch
+      // tabs manually first.
+      state.tab = 'promoted';
+      for (const t of document.querySelectorAll('[role=tab]')) {
+        t.setAttribute('aria-selected', String(t.dataset.tab === 'promoted'));
+      }
+    }
     await renderMaterials();
   };
 
@@ -687,6 +729,7 @@ function wire() {
         t.setAttribute('aria-selected', String(t === tab));
       }
       state.tab = tab.dataset.tab;
+      stopPlayback(); // never carry audio across a tab switch
       await renderMaterials();
     };
   }

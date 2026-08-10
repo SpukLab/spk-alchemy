@@ -19,6 +19,7 @@ import type { Entity } from '../core/primitives.ts';
 import { FamilyService } from '../domain/alchemy/family-service.ts';
 import type { DnaPackManifest, FamilyMember } from '../domain/alchemy/family-service.ts';
 import { buildDnaPackZip, packDirectoryName } from '../domain/alchemy/dna-pack.ts';
+import { lineageColorForMaterial } from '../domain/alchemy/lineage.ts';
 
 /**
  * Browser composition root.
@@ -42,6 +43,8 @@ export interface WebLab {
   reorderFamily(familyId: string, orderedMaterialIds: readonly string[]): Promise<void>;
   publishFamily(familyId: string): Promise<FamilyExport>;
   familyPackCount(familyId: string): Promise<number>;
+  /** Deterministic UI-only lineage color; never persisted, never canonical. */
+  lineageColor(materialId: string): Promise<string>;
   /** Microphone capture: bytes always come from the CaptureFormatPolicy's chosen encoder. */
   ingest(input: ArrayBuffer, filename: string): Promise<Entity>;
   /** File import: bytes are of unknown, unverified origin. Decode is the only gate. */
@@ -141,7 +144,9 @@ export async function openWebLab(): Promise<WebLab> {
       return [...page.items].reverse();       // newest first on a phone
     },
     async material(id) {
-      for (const state of [LIFECYCLE.promoted, LIFECYCLE.retained]) {
+      // Rejected Materials keep their canonical Content — rejection never
+      // deletes anything — so their audio remains intentionally reachable.
+      for (const state of [LIFECYCLE.promoted, LIFECYCLE.retained, LIFECYCLE.rejected]) {
         const page = await queries.materialsByLifecycle(state, undefined, 200);
         const found = page.items.find((m) => m.id === id);
         if (found) return found;
@@ -183,6 +188,9 @@ export async function openWebLab(): Promise<WebLab> {
     },
     async familyPackCount(familyId) {
       return (await families.listPacks(familyId)).length;
+    },
+    async lineageColor(materialId) {
+      return lineageColorForMaterial(materialId, queries);
     },
   };
 }
