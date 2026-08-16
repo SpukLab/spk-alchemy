@@ -1018,3 +1018,164 @@ dots, play buttons, pick-row layout).
 No structural primitive, no persistence field, no schema change, no ADR. The
 existing `ancestors()` query and the existing content-addressed `ContentStore`
 were sufficient for both features.
+
+## Mesa V1 — dual-territory creative exploration
+
+**Artist direction (feedback, not architecture):** move significantly away
+from the source while the source stays an anchor, so different inputs never
+collapse toward the same generic sound; 8 observations split 4 Medium / 4
+Unexpected; Unexpected must use different deviation strategies, not just
+different seeds; different Unexpected outputs should preserve different
+inherited characteristics; no global Depth slider yet; physical listening
+remains authoritative.
+
+### MesaState
+
+```
+fragmentar: { escala, desorden }      // 0..100 each
+acelerar:   { tiempo, movimiento }
+microscopio:{ zoom, persistencia }
+excitar:    { energia, estabilidad }
+```
+
+**Clamping rule:** every value is clamped into [0,100] and rounded, never
+rejected — `validateMesaState` is total. Serialization
+(`serializeMesaState`) is a plain deterministic join, used both for provenance
+display and nowhere near seed derivation (seeds derive from baseSeed +
+territory + strategy index, independent of the numeric slider values, so a
+MesaState change and a seed change are two clearly separate inputs).
+
+**Default**, chosen after generating the reference corpus below rather than
+guessing: `escala 60, desorden 60, tiempo 55, movimiento 40, zoom 55,
+persistencia 45, energia 40, estabilidad 55` — visibly transformed at rest,
+without starting at the extremes.
+
+### mesa-exploration-v1@1.0.0
+
+A new, separate configuration. `fragment-exploration-v1` (1.0.0/1.1.0/1.2.0)
+is untouched — verified against all three golden hash sets in the test suite.
+New DSP primitives (`timeScaleFrames`, `excite`, `loopRegion`) were added to
+`src/audio/operations.ts` additively; nothing already exported there was
+modified. Mesa's render pipeline reuses, unmodified: `fragmentEvenly`,
+`shuffleWithSeed`, `sliceFragment`, `reverseFrames`, `applyGain`,
+`applyBoundaryFade`, `fadeFramesForSampleRate`, and the existing Preview-level
+gain-consistency correction (`computePreviewGainCorrection`) from
+fragment-exploration-v1 — the same ±4dB/65%-pull model, called directly
+rather than reimplemented.
+
+### MEDIUM vs UNEXPECTED
+
+Not a depth metric with a threshold. MEDIUM strategies weight all four tools
+below 1.0 (0.2–1.0), keeping every transformation inside a range where the
+source stays evident. UNEXPECTED strategies weight one or two tools above 1.0
+(up to 1.4), pushing a specific dimension hard while the others stay
+moderate — and, critically, only Unexpected strategies carry a preservation
+anchor. Medium strategies need none: staying close to source is their
+default behavior by construction, not an explicit constraint.
+
+**Four Medium strategies** (`medium-structure`, `medium-fragment`,
+`medium-temporal`, `medium-texture`) — internal names, never shown to the
+artist — each emphasize a different tool combination per the brief's
+suggested profiles.
+
+**Four Unexpected strategies**, each with a distinct preservation anchor:
+
+| Strategy | Emphasis | Anchor |
+|---|---|---|
+| `unexpected-temporal-deviation` | Acelerar | `transient-peak` |
+| `unexpected-microscopic-deviation` | Microscopio | `texture-window` |
+| `unexpected-energetic-deviation` | Excitar | `onset` |
+| `unexpected-hybrid-deviation` | all four, elevated together | `fragment-identity` |
+
+Hybrid is explicitly not "everything at maximum" — its weights (0.9 across
+all four tools) sit below several single-emphasis strategies' peak weight
+(1.4), consistent with "interaction among tools," not brute intensity.
+
+### Preservation anchor model
+
+Four deterministic, measurable anchors — no perceptual AI, no embeddings:
+
+- **`onset`** — the source's first ~50ms (capped at ⅛ of total length or 400
+  frames) spliced in unmodified.
+- **`texture-window`** — a source window centered at the temporal midpoint.
+- **`transient-peak`** — a window centered on the source's single loudest
+  frame (linear scan for maximum absolute sample, deterministic).
+- **`fragment-identity`** — the second quarter of the source, verbatim,
+  independent of the strategy's own fragment count — a stable, reproducible
+  region regardless of Escala.
+
+Each anchor is located in the **source**, before any transformation, then
+prepended verbatim to the transformed output. This guarantees the named
+characteristic survives regardless of how aggressively the rest of the
+Mesa pipeline transforms the remainder — a structural guarantee, not a
+statistical one.
+
+### Excitation safety
+
+`excite()` blends wet (waveshaped + seeded jitter) and dry signal by an
+integer ratio; at `energia=100` at least 15% dry signal always survives
+(`MIN_DRY_NUMERATOR = 15` of 100), so maximum Energía reads as stressed and
+unstable rather than pure destruction. Verified: zero clipped samples across
+every reference-corpus observation and every adversarial fixture tested
+(silence, 64-frame minimum input, extreme MesaState).
+
+### Seed derivation
+
+```
+baseSeed → territorySeed = baseSeed + (medium: 0 | unexpected: 500003)
+         → strategySeed  = territorySeed + strategyIndex × 104729
+         → operationSeed = strategySeed + operationTag × 40009
+```
+
+Both offsets are primes, chosen only to spread values apart with no other
+significance. Documented and tested directly (`deriveStrategySeed`), not just
+asserted through output hashes.
+
+### Cross-source collapse prevention
+
+Because each strategy's preservation anchor is located *in that source's own
+audio*, two different sources can never produce identical Unexpected output
+under identical MesaState and seed — the anchor content alone differs.
+Verified with two unrelated fixture sources at both the default MesaState and
+an all-controls-at-100 extreme: 0 of 8 collapsed pairs in both cases.
+
+### Reference corpus
+
+Three fixture characters (percussive/transient, sustained/tonal, noisy),
+default MesaState, base seed 1000: 8/8 unique hashes per source, zero
+clipping, 31–80ms generation time for all eight observations — well inside
+the "part of an exploratory gesture" target. No workers were needed; measured
+before considering them, per the brief.
+
+### Provenance
+
+Nothing new persisted structurally. A Mesa run creates one Experiment Entity
+exactly as fragment-exploration-v1 does (`operation: 'exploration'`,
+`configurationId: 'mesa-exploration-v1'`). Retain writes the complete
+MesaState, territory, strategy id and anchor into the retained Material's
+`attributes.parameters` — no code change to `retain()` itself was needed,
+since `preview.parameters` already copies onto the Material verbatim.
+Second-generation exploration and lineage-color-root resolution were verified
+directly: A → B (Unexpected) → C (Medium), genealogy resolves A→B→C, lineage
+color still resolves to the original root A.
+
+### Files added
+
+`src/domain/alchemy/mesa.ts`, `tests/integration/mesa.test.ts`.
+
+### Files modified
+
+`src/audio/operations.ts` (additive: `timeScaleFrames`, `excite`,
+`loopRegion`), `src/domain/alchemy/service.ts` (additive:
+`runMesaExploration` method, `MesaPreviewSet`/`MesaPreviewVariation` types),
+`src/web/lab.ts` (`exploreMesa`, `defaultMesaState`), `web/index.html` (Mesa
+panel: mode tabs, eight sliders, grouped results markup and styles),
+`web/app.js` (slider reading, Mesa exploration call, grouped Medium/Unexpected
+rendering, play/retain/discard reusing the existing single-player
+infrastructure).
+
+### No Method yet
+
+MesaState is a clean, self-contained, serializable object specifically so a
+future "Save as Method" only needs to persist this shape — no Save button, no
+Method vocabulary, no persistence path was added in this phase.
