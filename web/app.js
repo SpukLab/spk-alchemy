@@ -18,6 +18,7 @@ const state = {
   curating: false, selected: new Set(),
   openFamilyId: null, playingMaterialId: null, playbackAudio: null,
   pickerSelected: new Set(),
+  exploreMode: 'quick', mesaObservations: [],
 };
 
 /**
@@ -154,11 +155,14 @@ async function importFile(file) {
 function selectSource(material) {
   state.source = material;
   state.previews = [];
+  state.mesaObservations = [];
   $('previews').innerHTML = '';
+  $('mesa-results').innerHTML = '';
   $('source').innerHTML = `
     <h3>${escapeHtml(material.attributes.filename || 'Material')}</h3>
     <div class="meta">${describe(material)}</div>`;
   $('explore').disabled = false;
+  $('mesa-explore').disabled = false;
 }
 
 async function runExploration() {
@@ -218,6 +222,131 @@ function dropPreview(index) {
   state.previews.splice(index, 1);
   renderPreviews();
   toast('Descartado');
+}
+
+// ---- Mesa ---------------------------------------------------------------
+
+const MESA_SLIDER_IDS = [
+  ['mesa-fragmentar-escala', 'fragmentar', 'escala'],
+  ['mesa-fragmentar-desorden', 'fragmentar', 'desorden'],
+  ['mesa-acelerar-tiempo', 'acelerar', 'tiempo'],
+  ['mesa-acelerar-movimiento', 'acelerar', 'movimiento'],
+  ['mesa-microscopio-zoom', 'microscopio', 'zoom'],
+  ['mesa-microscopio-persistencia', 'microscopio', 'persistencia'],
+  ['mesa-excitar-energia', 'excitar', 'energia'],
+  ['mesa-excitar-estabilidad', 'excitar', 'estabilidad'],
+];
+
+function initMesaSliders() {
+  const defaults = state.lab.defaultMesaState;
+  for (const [id, tool, control] of MESA_SLIDER_IDS) {
+    const el = $(id);
+    if (el) el.value = String(defaults[tool][control]);
+  }
+}
+
+function readMesaState() {
+  const s = { fragmentar: {}, acelerar: {}, microscopio: {}, excitar: {} };
+  for (const [id, tool, control] of MESA_SLIDER_IDS) {
+    s[tool][control] = Number($(id).value);
+  }
+  return s;
+}
+
+async function runMesaExplorationUI() {
+  if (!state.source) return;
+  $('mesa-explore').disabled = true;
+  $('mesa-explore').textContent = 'Explorando…';
+  try {
+    const question = $('mesa-intent').value.trim() || 'Exploración libre';
+    const mesaState = readMesaState();
+    const set = await state.lab.exploreMesa(state.source.id, question, mesaState);
+    state.mesaObservations = set.variations;
+    renderMesaResults();
+    toast(`${set.variations.length} observaciones`);
+  } catch (err) {
+    toast(`Error: ${err.message}`);
+  } finally {
+    $('mesa-explore').disabled = false;
+    $('mesa-explore').textContent = 'Explorar';
+  }
+}
+
+function renderMesaResults() {
+  const host = $('mesa-results');
+  host.innerHTML = '';
+  const groups = [
+    ['medium', 'Medias'],
+    ['unexpected', 'Inesperadas'],
+  ];
+  for (const [territory, label] of groups) {
+    const items = state.mesaObservations
+      .map((v, i) => ({ v, i }))
+      .filter(({ v }) => v.territory === territory);
+    if (items.length === 0) continue;
+    const group = document.createElement('div');
+    group.className = 'territory-group';
+    group.innerHTML = `<h3>${label}</h3>`;
+    items.forEach(({ v, i }, position) => {
+      const playing = state.playingMaterialId === `mesa:${i}`;
+      const card = document.createElement('div');
+      card.className = 'obs-card';
+      card.innerHTML = `
+        <button class="play-btn" data-mesa-play="${i}" aria-label="Reproducir">${playing ? '⏸' : '▶'}</button>
+        <div class="obs-info">
+          <h4>${label.slice(0, -1)} ${position + 1}</h4>
+          <div class="meta">${(v.preview.bytes.byteLength / 1024).toFixed(0)} KB</div>
+        </div>
+        <div class="obs-acts">
+          <button class="keep" data-mesa-keep="${i}">Conservar</button>
+          <button class="drop" data-mesa-drop="${i}">Descartar</button>
+        </div>`;
+      group.appendChild(card);
+    });
+    host.appendChild(group);
+  }
+}
+
+async function playMesaObservation(index) {
+  const obs = state.mesaObservations[index];
+  if (!obs) return;
+  if (state.playingMaterialId === `mesa:${index}`) { stopPlayback(); renderMesaResults(); return; }
+  stopPlayback();
+  const url = URL.createObjectURL(new Blob([obs.preview.bytes], { type: 'audio/wav' }));
+  const audio = new Audio(url);
+  audio.play();
+  audio.onended = () => { stopPlayback(); renderMesaResults(); };
+  state.playbackAudio = audio;
+  state.playingMaterialId = `mesa:${index}`;
+}
+
+async function keepMesaObservation(index) {
+  const obs = state.mesaObservations[index];
+  if (!obs) return;
+  try {
+    await state.lab.retain(obs.preview);
+    state.mesaObservations.splice(index, 1);
+    renderMesaResults();
+    await renderMaterials();
+    toast('Retenido');
+  } catch (err) {
+    toast(`Error: ${err.message}`);
+  }
+}
+
+function dropMesaObservation(index) {
+  state.mesaObservations.splice(index, 1);
+  renderMesaResults();
+  toast('Descartado');
+}
+
+function setExploreMode(mode) {
+  state.exploreMode = mode;
+  $('quick-explore-panel').hidden = mode !== 'quick';
+  $('mesa-panel').hidden = mode !== 'mesa';
+  for (const tab of document.querySelectorAll('#explore-mode-tabs [role=tab]')) {
+    tab.setAttribute('aria-selected', String(tab.dataset.mode === mode));
+  }
 }
 
 // ---- materials -------------------------------------------------------------
@@ -626,6 +755,18 @@ function wire() {
     e.target.value = '';
   };
   $('explore').onclick = runExploration;
+  $('mesa-explore').onclick = runMesaExplorationUI;
+
+  for (const tab of document.querySelectorAll('#explore-mode-tabs [role=tab]')) {
+    tab.onclick = () => setExploreMode(tab.dataset.mode);
+  }
+
+  $('mesa-results').onclick = async (e) => {
+    const d = e.target.dataset || {};
+    if (d.mesaPlay !== undefined) { await playMesaObservation(Number(d.mesaPlay)); renderMesaResults(); }
+    if (d.mesaKeep !== undefined) await keepMesaObservation(Number(d.mesaKeep));
+    if (d.mesaDrop !== undefined) dropMesaObservation(Number(d.mesaDrop));
+  };
   $('diag-toggle').onclick = async () => {
     const host = $('diag');
     if (!host.hidden) { host.hidden = true; $('diag-toggle').textContent = 'Ver compatibilidad'; return; }
@@ -762,6 +903,7 @@ async function boot() {
       $('status').textContent = `local · ${info.version}`;
     } catch { $('status').textContent = 'local · offline'; }
     wire();
+    initMesaSliders();
 
     // Capture may be impossible on this device or over http://. Explain it up
     // front rather than letting the record button fail silently.

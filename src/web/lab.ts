@@ -20,6 +20,9 @@ import { FamilyService } from '../domain/alchemy/family-service.ts';
 import type { DnaPackManifest, FamilyMember } from '../domain/alchemy/family-service.ts';
 import { buildDnaPackZip, packDirectoryName } from '../domain/alchemy/dna-pack.ts';
 import { lineageColorForMaterial } from '../domain/alchemy/lineage.ts';
+import { DEFAULT_MESA_STATE } from '../domain/alchemy/mesa.ts';
+import type { MesaState } from '../domain/alchemy/mesa.ts';
+import type { MesaPreviewSet } from '../domain/alchemy/service.ts';
 
 /**
  * Browser composition root.
@@ -45,6 +48,9 @@ export interface WebLab {
   familyPackCount(familyId: string): Promise<number>;
   /** Deterministic UI-only lineage color; never persisted, never canonical. */
   lineageColor(materialId: string): Promise<string>;
+  // Mesa V1
+  readonly defaultMesaState: MesaState;
+  exploreMesa(materialId: string, question: string, state: MesaState): Promise<MesaPreviewSet>;
   /** Microphone capture: bytes always come from the CaptureFormatPolicy's chosen encoder. */
   ingest(input: ArrayBuffer, filename: string): Promise<Entity>;
   /** File import: bytes are of unknown, unverified origin. Decode is the only gate. */
@@ -131,6 +137,13 @@ export async function openWebLab(): Promise<WebLab> {
         materialId, configuration: DEFAULT_FRAGMENT_EXPLORATION,
         researchIntentId: await intentFor(question),
         baseSeed: Date.now() >>> 0, variationCount: variations, agentId: artist.id });
+    },
+
+    defaultMesaState: DEFAULT_MESA_STATE,
+    async exploreMesa(materialId, question, state) {
+      return service.runMesaExploration({
+        materialId, researchIntentId: await intentFor(question),
+        mesaState: state, baseSeed: Date.now() >>> 0, agentId: artist.id });
     },
 
     async retain(preview) { return (await service.retain(preview, artist.id)).material; },
