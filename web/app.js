@@ -358,6 +358,19 @@ function describe(material) {
   return `${seconds}captura`;
 }
 
+
+/**
+ * Lineage color is a recognition aid, not a requirement: if resolving it for
+ * one Material fails (a stale genealogy record, an unusual store state), that
+ * single card falls back to a neutral marker instead of taking down the whole
+ * list -- retaining or rendering a Material must never depend on every OTHER
+ * Material's genealogy resolving cleanly.
+ */
+async function safeLineageColor(materialId) {
+  try { return await state.lab.lineageColor(materialId); }
+  catch { return '#8b8b96'; }
+}
+
 async function renderMaterials() {
   const host = $('materials');
   const items = await state.lab.materials(state.tab);
@@ -368,7 +381,7 @@ async function renderMaterials() {
   }
   // Fetch lineage colors in parallel: each is a small bounded ancestors query,
   // never a canonical write, never dependent on lifecycle or Family state.
-  const colors = await Promise.all(items.map((m) => state.lab.lineageColor(m.id)));
+  const colors = await Promise.all(items.map((m) => safeLineageColor(m.id)));
 
   host.innerHTML = '';
   const curatingHere = state.curating && state.tab === 'promoted';
@@ -486,7 +499,7 @@ async function renderFamilyDetail() {
     return;
   }
   const materials = await Promise.all(members.map((m) => state.lab.material(m.materialId)));
-  const colors = await Promise.all(members.map((m) => state.lab.lineageColor(m.materialId)));
+  const colors = await Promise.all(members.map((m) => safeLineageColor(m.materialId)));
   host.innerHTML = '';
   members.forEach((member, index) => {
     const material = materials[index];
