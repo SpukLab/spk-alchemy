@@ -20,6 +20,11 @@ import type { ResearchConfiguration } from './research-configuration.ts';
 import { describeParameters } from './research-configuration.ts';
 import type { PreviewSet, PreviewVariation } from './exploration.ts';
 import { decodeWav } from '../../audio/wav.ts';
+import type { MesaState, Territory, PreservationAnchor } from './mesa.ts';
+import {
+  runMesaExploration as runMesaExplorationEngine, validateMesaState, serializeMesaState,
+  MESA_CONFIGURATION_ID, MESA_VERSION, MESA_SCHEMA_VERSION,
+} from './mesa.ts';
 
 const SCHEMA_VERSION = 1;
 
@@ -44,6 +49,18 @@ export interface Preview {
     variationIndex: number;
     seed: number;
   };
+}
+
+export interface MesaPreviewVariation {
+  index: number; territory: Territory; strategyId: string;
+  anchor: PreservationAnchor; seed: number; preview: Preview;
+}
+export interface MesaPreviewSet {
+  kind: 'mesa-preview-set';
+  researchIntentId: string; sourceMaterialIds: readonly string[];
+  configurationId: string; configurationVersion: string; implementationVersion: string;
+  baseSeed: number; variations: MesaPreviewVariation[];
+  executionAgentId: string; createdAt: number; mesaState: MesaState;
 }
 
 export interface RetainResult { material: Entity; transition: Transition; created: boolean }
@@ -492,6 +509,79 @@ export class AlchemyService {
       { op: 'put', collection: COLLECTIONS.transitions, record: transition as never },
     ]);
     return { material: updated, transition, changed: true };
+  }
+
+  // ---- Mesa V1 (mesa-exploration-v1) ---------------------------------------
+
+  /**
+   * Runs the fixed 4-Medium + 4-Unexpected Mesa distribution and returns a
+   * runtime-only MesaPreviewSet. Nothing is persisted here — identical to
+   * runResearchConfiguration, each Preview stays runtime state until an
+   * explicit Retain. Mesa is domain/runtime configuration, never a canonical
+   * Entity: MesaState is validated and translated entirely in memory, and the
+   * only thing that reaches persistence is ordinary Material provenance via
+   * the existing, unmodified retain() path — preview.parameters already
+   * copies verbatim onto the retained Material's attributes.
+   */
+  async runMesaExploration(input: {
+    materialId: string; researchIntentId: string;
+    mesaState: MesaState; baseSeed: number; agentId: string;
+  }): Promise<MesaPreviewSet> {
+    const agent = await this.#requireAgent(input.agentId);
+    const material = await this.#requireEntity(input.materialId);
+    const intent = await this.#records.get(COLLECTIONS.entities, input.researchIntentId);
+    if (!intent || (intent as unknown as Entity).type !== TYPE_RESEARCH_INTENT) {
+      throw new DomainRuleError(
+        `Mesa exploration references a Research Intent that does not exist: ${input.researchIntentId}`);
+    }
+    const hash = String(material.attributes.contentHash);
+    const bytes = await this.#content.get(hash);
+    if (!bytes) throw new IntegrityError(`missing content ${hash} for material ${material.id}`);
+
+    const mesaState = validateMesaState(input.mesaState);
+
+    // One Experiment records the Mesa run as a reproducible research action,
+    // exactly as fragment-exploration-v1 already does.
+    const mesaConfigStub = {
+      id: MESA_CONFIGURATION_ID, version: MESA_VERSION, schemaVersion: MESA_SCHEMA_VERSION,
+      implementationVersion: MESA_VERSION,
+      operations: [{ operation: 'mesa-exploration', description: 'Mesa V1 dual-territory exploration' }],
+    } as unknown as ResearchConfiguration;
+    const experiment = await this.createExperiment({
+      researchIntentId: input.researchIntentId, inputMaterialIds: [material.id],
+      operation: 'exploration' as OperationName,
+      parameters: { mesaState } as unknown as OperationParameters,
+      agentId: input.agentId, configuration: mesaConfigStub, baseSeed: input.baseSeed,
+    });
+
+    const observations = runMesaExplorationEngine(bytes, mesaState, input.baseSeed);
+    const variations: MesaPreviewVariation[] = observations.map((obs, index) => {
+      const outputHash = contentHash(obs.bytes);
+      const preview: Preview = {
+        kind: 'preview',
+        stagingRef: idempotencyKey('preview', experiment.id, obs.strategyId, String(obs.seed), outputHash),
+        experimentId: experiment.id, sourceMaterialIds: [material.id],
+        operation: obs.strategyId, implementationVersion: MESA_VERSION,
+        bytes: obs.bytes, contentHash: outputHash,
+        parameters: {
+          mesaState, mesaStateSerialized: serializeMesaState(mesaState),
+          territory: obs.territory, strategyId: obs.strategyId, anchor: obs.anchor,
+        },
+        exploration: {
+          configurationId: MESA_CONFIGURATION_ID, configurationVersion: MESA_VERSION,
+          variationIndex: index, seed: obs.seed,
+        },
+      };
+      return { index, territory: obs.territory, strategyId: obs.strategyId, anchor: obs.anchor, seed: obs.seed, preview };
+    });
+
+    return {
+      kind: 'mesa-preview-set', researchIntentId: input.researchIntentId,
+      sourceMaterialIds: [material.id], configurationId: MESA_CONFIGURATION_ID,
+      configurationVersion: MESA_VERSION, implementationVersion: MESA_VERSION,
+      baseSeed: input.baseSeed, variations, executionAgentId: agent.id,
+      createdAt: this.#clock(), mesaState,
+    };
   }
 
   // ---- helpers -------------------------------------------------------------
