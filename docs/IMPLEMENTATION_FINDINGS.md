@@ -1179,3 +1179,135 @@ infrastructure).
 MesaState is a clean, self-contained, serializable object specifically so a
 future "Save as Method" only needs to persist this shape — no Save button, no
 Method vocabulary, no persistence path was added in this phase.
+
+## Mesa V1 not approved — physical feedback and two fixes
+
+**Physical artist feedback, verbatim classification per the Canon's own
+distinction (measured evidence stays separate below):**
+
+1. The eight outputs did not sound perceptually distinct enough. Hashes and
+   seeds differed but that does not guarantee audible difference. Revised
+   criterion: 4 Medium clearly different from source but still recognizable;
+   4 Unexpected clearly different **from each other**, not only from source,
+   each with one dominant perceptible transformation (temporal
+   stretch/compress/discontinuity, microscopic extraction/repetition,
+   energetic saturation/instability, hybrid as genuine structural
+   recombination — not "everything moderate").
+2. A JavaScript error, `unsupported key component type: undefined`, appeared
+   as a toast after generating variations, on the real device.
+
+**Mesa V1 is not approved.** Both are addressed below; physical listening
+remains the final judge, not this document.
+
+### Bug: `unsupported key component type: undefined`
+
+**Root cause.** `encodeKey` in `src/persistence/keys.ts` threw on any
+component that was literally `undefined`, while the adapters' own field
+extraction (`#extract`) already normalizes a missing field to `null` before
+it reaches an index entry. That asymmetry meant only a RAW, hand-assembled
+query tuple — a keyset pagination cursor, an adjacency query's optional
+`type` filter — could ever trigger it, and only on a store carrying older or
+unusual record shapes; it did not reproduce in this environment against
+freshly-created data through either the SQLite or IndexedDB adapter, only
+against inputs deliberately constructed to be missing a field. That is
+consistent with the toast appearing on a real device with weeks of
+accumulated history across many prior builds, rather than in a fresh test
+fixture.
+
+**Fix.** `encodeKey` now treats `undefined` identically to `null` — the same
+degrade-gracefully rule the extraction layer already followed, applied
+consistently at the one place that had been missing it. This is a narrowing
+of failure modes, not a semantic change: `undefined` and `null` were already
+indistinguishable everywhere the encoding is consumed.
+
+**Defense in depth.** Independent of root cause, `renderMaterials()` and
+`renderFamilyDetail()` computed lineage color for every visible Material via
+one `Promise.all` — a single resolution failure aborted the whole render and,
+worse, surfaced through `keepPreview`'s catch block as a raw error toast
+covering the just-retained result. Lineage color is a recognition aid, not a
+requirement; resolving it for one Material must never block seeing or
+retaining any other. Both call sites now use a `safeLineageColor` wrapper
+that falls back to a neutral marker per-Material on failure instead of
+failing the whole list.
+
+### Mesa perceptual distance
+
+**Measured evidence, reference corpus before the fix:** all eight
+observations converged to RMS 0.106–0.131 and peak 0.29–0.37 regardless of
+strategy — a narrow band that matches the artist's complaint almost exactly.
+
+**Root cause, found by direct measurement, not guessed:** Mesa's final gain
+stage reused fragment-exploration-v1's Preview-level correction unchanged —
+which pulls every variation 65% of the way toward one shared RMS target.
+That is exactly right for fragment-exploration-v1, where variations are
+meant to sound comparably loud. It is exactly wrong for Mesa, where
+Energética is *supposed* to read louder and harsher than Microscópica — the
+correction was actively erasing the contrast between territories that Mesa
+exists to produce.
+
+**Fix 1 — gain stage.** Mesa's final step is now peak-only safety: reduce
+gain only if the transformation pushed the signal past the clipping
+ceiling, never pull toward a shared loudness target. Zero clipping confirmed
+on the reference corpus, spread widened from ~0dB effective (all outputs
+statistically indistinguishable) toward each strategy's natural energy
+profile.
+
+**Fix 2 — dominant treatment per Unexpected strategy.** Weight multipliers
+alone produced outputs that differed in seed and detail but not in kind — the
+artist's core objection. Each Unexpected strategy now forces one unmistakable
+structural behavior, added as a `dominantTreatment` on `MesaStrategy`,
+layered on top of (not replacing) the existing weight-based translation:
+
+- **`temporal-alternation`** (unexpected-temporal-deviation): fragments
+  alternate between hard compression and hard stretch by position parity,
+  rather than gentle continuous jitter around one ratio — audible
+  discontinuity at every cut, matching "stretch/compress, repetición,
+  discontinuidad temporal" directly.
+- **`microscopic-lock`** (unexpected-microscopic-deviation): forces a small
+  region (≤64 frames) and 5–8 repeats regardless of the Zoom/Persistencia
+  sliders, so the granular/looping identity is never diluted by a mild
+  MesaState.
+- **`energetic-surge`** (unexpected-energetic-deviation): forces
+  intensity/instability to a floor (75/70 of 100) regardless of the sliders,
+  and skips the shared per-position gain decay so it stays loud throughout —
+  the dry-floor safety inside `excite()` still guarantees it never fully
+  destroys the signal.
+- **`rotating-hybrid`** (unexpected-hybrid-deviation): rotates through all
+  three dominant treatments **per fragment** by position (mod 3), producing
+  genuine structural recombination rather than one moderate blend applied
+  everywhere.
+
+**Reference corpus after both fixes**, same synthetic source, base seed 1000:
+
+| Strategy | Frames | Peak | RMS |
+|---|---|---|---|
+| medium-structure | 9548 | 0.499 | 0.159 |
+| medium-fragment | 11808 | 0.497 | 0.150 |
+| medium-temporal | 7812 | 0.500 | 0.186 |
+| medium-texture | 6024 | 0.512 | 0.200 |
+| unexpected-temporal-deviation | 4580 | 0.561 | 0.204 |
+| unexpected-microscopic-deviation | 2048 | 0.404 | 0.170 |
+| unexpected-energetic-deviation | 7812 | 0.561 | 0.226 |
+| unexpected-hybrid-deviation | 6900 | 0.445 | 0.156 |
+
+Duration alone now ranges 2048–11808 frames (≈5.8×) instead of clustering as
+before; Energética has the highest RMS of the Unexpected set, consistent with
+reading louder/harsher; zero clipping across the corpus; 0/8 collapsed pairs
+against an unrelated second source, confirmed again after the change. All
+211 tests remain green — none of Mesa's existing tests hash-lock specific
+strategy output, so revising the DSP in place required no test rewrites,
+only new evidence.
+
+**Versioning decision, documented as asked:** revised `mesa-exploration-v1`
+in place rather than publishing `1.1.0`. The prior version was explicitly
+rejected before any physical Retain succeeded against it — no manifest exists
+that could reference the earlier behavior, so the "never mutate a version
+once used" rule that governs fragment-exploration-v1 does not yet apply here.
+The moment a Mesa observation is retained and approved, this same discipline
+switches on for Mesa too.
+
+**Still not approved.** These are structural, measured improvements. Whether
+they read correctly on the device — whether Energética actually sounds
+louder and rougher, whether Microscópica actually sounds granular rather than
+just shorter — is exactly what the next physical listening pass needs to
+confirm.
