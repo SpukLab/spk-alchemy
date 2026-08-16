@@ -77,13 +77,23 @@ function encodeString(value: string): Uint8Array {
 export function encodeKey(tuple: KeyTuple): Uint8Array {
   const parts: Uint8Array[] = [];
   for (const component of tuple) {
-    if (component === null) { parts.push(Uint8Array.of(TAG_NULL)); }
+    // A missing field is already normalized to null by the adapters' own
+    // field extraction (#extract) before it reaches an index entry. This
+    // second line of defense treats `undefined` identically: a raw query
+    // tuple assembled by hand (a cursor, an optional filter field) must
+    // degrade the same way an absent value does, never throw. Encoding
+    // undefined as TAG_NULL is safe because it is never distinguished from
+    // an explicit null anywhere the encoding is consumed.
+    if (component === null || component === undefined) { parts.push(Uint8Array.of(TAG_NULL)); }
     else if (typeof component === 'boolean') {
       parts.push(Uint8Array.of(component ? TAG_TRUE : TAG_FALSE));
     }
     else if (typeof component === 'number') { parts.push(encodeInt(component)); }
     else if (typeof component === 'string') { parts.push(encodeString(component)); }
-    else { throw new KeyEncodingError(`unsupported key component type: ${typeof component}`); }
+    else {
+      throw new KeyEncodingError(
+        `unsupported key component type: ${typeof component} (value: ${String(component)})`);
+    }
   }
   return concatBytes(parts);
 }

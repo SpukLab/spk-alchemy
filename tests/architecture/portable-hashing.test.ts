@@ -59,3 +59,16 @@ test('idempotency keys are deterministic and separator-safe', () => {
   assert.notEqual(idempotencyKey('a', 'bc'), idempotencyKey('ab', 'c'));
   assert.match(idempotencyKey('x'), /^ik_[0-9a-f]{32}$/);
 });
+
+test('encodeKey treats undefined identically to null (device regression)', async () => {
+  const { encodeKey, decodeKey } = await import('../../src/persistence/keys.ts');
+  // Physical-device regression: "unsupported key component type: undefined"
+  // surfaced during Retain -> lineage-color resolution on a real store with
+  // weeks of accumulated history. A raw query tuple must degrade the same
+  // way a missing field already does via field extraction, never throw.
+  const withUndefined = encodeKey([undefined, 'x', 5]);
+  const withNull = encodeKey([null, 'x', 5]);
+  assert.deepEqual(Array.from(withUndefined), Array.from(withNull));
+  assert.deepEqual(decodeKey(withUndefined), [null, 'x', 5]);
+  assert.doesNotThrow(() => encodeKey([undefined]));
+});
