@@ -117,3 +117,82 @@ export function applyBoundaryFade(
   }
   return out;
 }
+
+// ---- Mesa deterministic operations (mesa-exploration-v1) -------------------
+// Additive only: nothing above this line is modified, so fragment-exploration
+// -v1@1.0.0/1.1.0/1.2.0 remain byte-identical. These are pure, frame-safe,
+// integer-or-fixed-arithmetic transforms reused by Mesa's own render pipeline.
+
+/**
+ * Deterministic time scaling by nearest-neighbor frame resampling.
+ * ratio > 1 expands (slower/longer), ratio < 1 compresses (faster/shorter).
+ * Expressed as an integer ratio (numerator/denominator) so the same inputs
+ * always produce the same frame count and the same selected source frames —
+ * no floating-point drift between platforms.
+ */
+export function timeScaleFrames(
+  samples: Int16Array, channels: number, numerator: number, denominator: number,
+): Int16Array {
+  const sourceFrames = channels > 0 ? samples.length / channels : 0;
+  if (sourceFrames === 0 || numerator <= 0 || denominator <= 0) return new Int16Array(0);
+  const outFrames = Math.max(1, Math.round((sourceFrames * numerator) / denominator));
+  const out = new Int16Array(outFrames * channels);
+  for (let f = 0; f < outFrames; f++) {
+    // Nearest-neighbor source frame, computed with integer-safe rounding.
+    const srcFrame = Math.min(sourceFrames - 1, Math.floor((f * sourceFrames) / outFrames));
+    for (let c = 0; c < channels; c++) out[f * channels + c] = samples[srcFrame * channels + c]!;
+  }
+  return out;
+}
+
+/**
+ * Deterministic bounded waveshaping (soft saturation) plus seeded
+ * micro-amplitude perturbation. `intensity` in [0,100] controls wet/dry
+ * blend; the dry floor (see MIN_DRY) guarantees some of the original signal
+ * always survives, so high intensity reads as stressed/unstable rather than
+ * pure noise or flat clipping.
+ */
+const MIN_DRY_NUMERATOR = 15; // at intensity=100, at least 15% dry signal remains
+const DRY_DENOMINATOR = 100;
+
+export function excite(
+  samples: Int16Array, intensity: number, instability: number, seed: number,
+): Int16Array {
+  const clampedIntensity = Math.max(0, Math.min(100, intensity));
+  const clampedInstability = Math.max(0, Math.min(100, instability));
+  const wetNumerator = Math.min(DRY_DENOMINATOR - MIN_DRY_NUMERATOR, clampedIntensity);
+  const dryNumerator = DRY_DENOMINATOR - wetNumerator;
+  const rng = seededRandom(seed);
+  const out = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const x = samples[i]! / 32768;
+    // Soft saturation: cubic waveshaper, bounded to [-1, 1] by construction.
+    const shaped = x - (x * x * x) / 3;
+    // Deterministic micro-perturbation, scaled by instability.
+    const jitter = clampedInstability > 0
+      ? ((rng() - 0.5) * (clampedInstability / 100) * 0.08) : 0;
+    const wet = Math.max(-1, Math.min(1, shaped + jitter));
+    const blended = (samples[i]! * dryNumerator + Math.round(wet * 32768) * wetNumerator) / DRY_DENOMINATOR;
+    out[i] = Math.max(-32768, Math.min(32767, Math.round(blended)));
+  }
+  return out;
+}
+
+/**
+ * Deterministic micro-region loop: extracts `regionFrames` starting at
+ * `startFrame` and repeats it `repeatCount` times. This is Microscopio's
+ * "persistence" behavior — dwelling on one discovered region rather than a
+ * generic granular texture.
+ */
+export function loopRegion(
+  samples: Int16Array, channels: number, startFrame: number, regionFrames: number, repeatCount: number,
+): Int16Array {
+  const totalFrames = channels > 0 ? samples.length / channels : 0;
+  const start = Math.max(0, Math.min(startFrame, Math.max(0, totalFrames - 1)));
+  const length = Math.max(1, Math.min(regionFrames, totalFrames - start));
+  const region = samples.slice(start * channels, (start + length) * channels);
+  const repeats = Math.max(1, repeatCount);
+  const out = new Int16Array(region.length * repeats);
+  for (let r = 0; r < repeats; r++) out.set(region, r * region.length);
+  return out;
+}
