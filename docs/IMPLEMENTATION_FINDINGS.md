@@ -1311,3 +1311,115 @@ they read correctly on the device — whether Energética actually sounds
 louder and rougher, whether Microscópica actually sounds granular rather than
 just shorter — is exactly what the next physical listening pass needs to
 confirm.
+
+## Mesa UI completion + non-colliding lineage colors
+
+### UX defect — root cause found, and it was mine
+
+**The Mesa UI was not missing. It was unreachable.**
+
+`wire()` contained two `role="tab"` wiring loops. The mode tabs (Rápida/Mesa)
+were wired first with a scoped selector; the Materials tabs were wired second
+with an **unscoped** `document.querySelectorAll('[role=tab]')`. That second
+selector also matched the mode tabs, and running later, silently overwrote
+their handlers.
+
+So tapping "Mesa" ran the Materials tab handler instead: it set
+`state.tab = tab.dataset.tab`, which is `undefined` for a mode tab (mode tabs
+carry `data-mode`), then re-rendered the Materials list. The Mesa panel was
+never revealed, and the previous exploration UI stayed on screen — exactly
+what the device showed.
+
+**The same collision caused the other reported bug.** `state.tab = undefined`
+flowed into `materialsByLifecycle(undefined)` → index prefix
+`[role, undefined]` → `encodeKey` → `unsupported key component type:
+undefined`. Both physical findings had one cause.
+
+**This means the previous session's fix treated a symptom.** Making
+`encodeKey` tolerate `undefined` was correct on its own terms — the extraction
+layer already normalized missing fields to `null`, so the asymmetry was a real
+latent defect worth closing — but it silenced the error message that was
+pointing at the actual bug, and I concluded the cause was stale device data
+without ever finding the code path that produced the `undefined`. The
+diagnostic lesson is specific: an error whose *value* is `undefined` almost
+always means a variable was never assigned, not that stored data is malformed.
+I reached for the data explanation because I had recently been working on
+storage, and stopped once the symptom disappeared.
+
+**Fix.** Both wiring loops are now scoped — `#material-tabs [role=tab]` and
+`#explore-mode-tabs [role=tab]`. A test asserts no unscoped `[role=tab]`
+selector may reappear.
+
+### Mesa UI completion
+
+Eight sliders bound one-to-one to `MesaState` fields, verified by exercising
+the real read/write functions: moving each control changes exactly its own
+field and disturbs none of the other seven. Defaults come from
+`lab.defaultMesaState` through the existing `openLab()` boundary — one source
+of truth, no numbers duplicated in markup (asserted by test). **Restablecer
+Mesa** re-applies the same domain defaults; runtime only, no Entity, no
+Transition.
+
+Results now group by each observation's **actual runtime territory metadata**,
+not list position, and each observation displays its **real strategy
+identity** — Estructura / Fragmentación / Temporal / Textura, and Temporal /
+Microscópica / Energética / Híbrida — via `mesa-labels.ts`, which maps
+identifiers to Spanish labels and fails loudly (`missingStrategyLabels()`) if
+a strategy ever lacks one. No Mesa result is shown as "Variación N".
+
+### Visual-semantics defect — lineage color collisions
+
+**Previous algorithm:** `hash(rootId) % palette.length`. Two unrelated roots
+could land on the same slot while other slots sat unused, visually implying
+ancestry that does not exist — which is precisely the one thing the color is
+supposed to communicate.
+
+**New algorithm:** a browser-local registry. Resolve the root, look it up; if
+unseen, take the first *free* slot, searching from the hash position (so
+installs spread across the palette rather than all filling slot 0 first), then
+persist. An already-assigned root **never** changes slot, so adding roots can
+only consume free capacity, never reshuffle existing colors. Measured: ten
+unrelated roots now occupy all ten slots with zero collisions.
+
+**Palette exhaustion:** once every slot is assigned, a new root falls back
+deterministically to its hash position. A collision becomes unavoidable at
+that point, but it is reproducible and no existing root is disturbed to make
+room — stability of what the artist already knows outweighs perfect
+uniqueness.
+
+**Storage boundary, explicit:** `localStorage`, key
+`alchemy.lineage-palette.v1`. Chosen over IndexedDB because the payload is a
+handful of short string→int pairs and localStorage was materially simpler.
+It is **not** canonical: it never touches RecordStore, adds no Entity
+attribute, and losing it costs only the specific colors previously shown —
+never a Material, never genealogy. Tests assert no canonical attribute
+matching `/color|palette|slot|lineage/` exists and that the registry module
+contains no persistence call in executable code.
+
+**Migration of existing device data:** lazy and non-destructive. An existing
+root gets a registry slot the first time it is rendered after the upgrade,
+then keeps it. Roots that previously collided under hash-modulo are separated
+into free slots as they are encountered — verified by a test that finds two
+ids genuinely colliding under the old rule and confirms the registry assigns
+them different slots. No canonical record is rewritten.
+
+**Resilience preserved:** `safeLineageColor` still isolates failures per
+Material, and the neutral fallback (`#8b8b96`) is deliberately outside the
+palette, so a resolution failure can never be mistaken for a real lineage.
+
+### One more false-positive test, worth naming
+
+A new assertion checking "the registry never touches canonical persistence"
+initially failed — because the module *documents its own boundary* by naming
+`RecordStore` in a comment. Fourth instance of the same pattern (after SQL,
+`Math.random`, and `global`). Structural tests that grep source must strip
+comments and string literals first; the rule is now applied consistently
+across all of them.
+
+### Measured evidence
+
+229/229 tests (211 → 229, 18 added). Deployable artifact verified to contain
+`mesa-panel`, `mesa-reset`, `material-tabs` and all eight slider ids. Boot
+probe against the built bundle with `Buffer` deleted and no `localStorage`
+available: `openLab()` resolves, labels map correctly, and the registry
+degrades to fresh assignment rather than crashing.
