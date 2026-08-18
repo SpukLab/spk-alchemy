@@ -262,7 +262,7 @@ async function runMesaExplorationUI() {
     const mesaState = readMesaState();
     const set = await state.lab.exploreMesa(state.source.id, question, mesaState);
     state.mesaObservations = set.variations;
-    renderMesaResults();
+    await renderMesaResults();
     toast(`${set.variations.length} observaciones`);
   } catch (err) {
     toast(`Error: ${err.message}`);
@@ -272,29 +272,34 @@ async function runMesaExplorationUI() {
   }
 }
 
-function renderMesaResults() {
+async function renderMesaResults() {
   const host = $('mesa-results');
   host.innerHTML = '';
-  const groups = [
-    ['medium', 'Medias'],
-    ['unexpected', 'Inesperadas'],
-  ];
-  for (const [territory, label] of groups) {
+  if (state.mesaObservations.length === 0) return;
+  // One lineage color for the whole set: every observation descends from the
+  // same source, so they all share its color by definition.
+  const color = state.source ? await safeLineageColor(state.source.id) : '#8b8b96';
+
+  for (const territory of ['medium', 'unexpected']) {
+    // Grouping comes from each observation's actual runtime territory
+    // metadata, never from its position in the list.
     const items = state.mesaObservations
       .map((v, i) => ({ v, i }))
       .filter(({ v }) => v.territory === territory);
     if (items.length === 0) continue;
     const group = document.createElement('div');
     group.className = 'territory-group';
-    group.innerHTML = `<h3>${label}</h3>`;
-    items.forEach(({ v, i }, position) => {
+    group.innerHTML = `<h3>${escapeHtml(state.lab.territoryLabel(territory))}</h3>`;
+    for (const { v, i } of items) {
       const playing = state.playingMaterialId === `mesa:${i}`;
       const card = document.createElement('div');
       card.className = 'obs-card';
+      // The label is the strategy's real identity, mapped from its id --
+      // never a positional "Variación N".
       card.innerHTML = `
         <button class="play-btn" data-mesa-play="${i}" aria-label="Reproducir">${playing ? '⏸' : '▶'}</button>
         <div class="obs-info">
-          <h4>${label.slice(0, -1)} ${position + 1}</h4>
+          <h4><span class="lineage-dot" style="background:${color}" aria-hidden="true"></span>${escapeHtml(state.lab.strategyLabel(v.strategyId))}</h4>
           <div class="meta">${(v.preview.bytes.byteLength / 1024).toFixed(0)} KB</div>
         </div>
         <div class="obs-acts">
@@ -302,7 +307,7 @@ function renderMesaResults() {
           <button class="drop" data-mesa-drop="${i}">Descartar</button>
         </div>`;
       group.appendChild(card);
-    });
+    }
     host.appendChild(group);
   }
 }
@@ -310,12 +315,12 @@ function renderMesaResults() {
 async function playMesaObservation(index) {
   const obs = state.mesaObservations[index];
   if (!obs) return;
-  if (state.playingMaterialId === `mesa:${index}`) { stopPlayback(); renderMesaResults(); return; }
+  if (state.playingMaterialId === `mesa:${index}`) { stopPlayback(); await renderMesaResults(); return; }
   stopPlayback();
   const url = URL.createObjectURL(new Blob([obs.preview.bytes], { type: 'audio/wav' }));
   const audio = new Audio(url);
   audio.play();
-  audio.onended = () => { stopPlayback(); renderMesaResults(); };
+  audio.onended = () => { stopPlayback(); void renderMesaResults(); };
   state.playbackAudio = audio;
   state.playingMaterialId = `mesa:${index}`;
 }
@@ -326,7 +331,7 @@ async function keepMesaObservation(index) {
   try {
     await state.lab.retain(obs.preview);
     state.mesaObservations.splice(index, 1);
-    renderMesaResults();
+    await renderMesaResults();
     await renderMaterials();
     toast('Retenido');
   } catch (err) {
@@ -334,9 +339,9 @@ async function keepMesaObservation(index) {
   }
 }
 
-function dropMesaObservation(index) {
+async function dropMesaObservation(index) {
   state.mesaObservations.splice(index, 1);
-  renderMesaResults();
+  await renderMesaResults();
   toast('Descartado');
 }
 
@@ -769,6 +774,7 @@ function wire() {
   };
   $('explore').onclick = runExploration;
   $('mesa-explore').onclick = runMesaExplorationUI;
+  $('mesa-reset').onclick = () => { initMesaSliders(); toast('Mesa restablecida'); };
 
   for (const tab of document.querySelectorAll('#explore-mode-tabs [role=tab]')) {
     tab.onclick = () => setExploreMode(tab.dataset.mode);
@@ -776,9 +782,9 @@ function wire() {
 
   $('mesa-results').onclick = async (e) => {
     const d = e.target.dataset || {};
-    if (d.mesaPlay !== undefined) { await playMesaObservation(Number(d.mesaPlay)); renderMesaResults(); }
+    if (d.mesaPlay !== undefined) { await playMesaObservation(Number(d.mesaPlay)); await renderMesaResults(); }
     if (d.mesaKeep !== undefined) await keepMesaObservation(Number(d.mesaKeep));
-    if (d.mesaDrop !== undefined) dropMesaObservation(Number(d.mesaDrop));
+    if (d.mesaDrop !== undefined) await dropMesaObservation(Number(d.mesaDrop));
   };
   $('diag-toggle').onclick = async () => {
     const host = $('diag');
@@ -821,7 +827,7 @@ function wire() {
       // mode opens straight onto them instead of making the artist switch
       // tabs manually first.
       state.tab = 'promoted';
-      for (const t of document.querySelectorAll('[role=tab]')) {
+      for (const t of document.querySelectorAll('#material-tabs [role=tab]')) {
         t.setAttribute('aria-selected', String(t.dataset.tab === 'promoted'));
       }
     }
@@ -877,9 +883,16 @@ function wire() {
     if (e.target.checked) state.pickerSelected.add(id); else state.pickerSelected.delete(id);
   });
 
-  for (const tab of document.querySelectorAll('[role=tab]')) {
+  // Scoped to #material-tabs specifically. An unscoped '[role=tab]' selector
+  // also matched the Rápida/Mesa mode tabs and, running later in wire(),
+  // overwrote their handlers -- so tapping "Mesa" ran the materials handler
+  // instead, setting state.tab to undefined (mode tabs carry data-mode, not
+  // data-tab) and never revealing the Mesa panel. That single collision caused
+  // BOTH reported device symptoms: the missing Mesa UI and the
+  // "unsupported key component type: undefined" toast.
+  for (const tab of document.querySelectorAll('#material-tabs [role=tab]')) {
     tab.onclick = async () => {
-      for (const t of document.querySelectorAll('[role=tab]')) {
+      for (const t of document.querySelectorAll('#material-tabs [role=tab]')) {
         t.setAttribute('aria-selected', String(t === tab));
       }
       state.tab = tab.dataset.tab;
