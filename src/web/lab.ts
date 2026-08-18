@@ -19,8 +19,10 @@ import type { Entity } from '../core/primitives.ts';
 import { FamilyService } from '../domain/alchemy/family-service.ts';
 import type { DnaPackManifest, FamilyMember } from '../domain/alchemy/family-service.ts';
 import { buildDnaPackZip, packDirectoryName } from '../domain/alchemy/dna-pack.ts';
-import { lineageColorForMaterial } from '../domain/alchemy/lineage.ts';
+import { LineageColorRegistry } from '../domain/alchemy/lineage-registry.ts';
+import type { LineageRegistryStore } from '../domain/alchemy/lineage-registry.ts';
 import { DEFAULT_MESA_STATE } from '../domain/alchemy/mesa.ts';
+import { strategyLabel, territoryLabel } from '../domain/alchemy/mesa-labels.ts';
 import type { MesaState } from '../domain/alchemy/mesa.ts';
 import type { MesaPreviewSet } from '../domain/alchemy/service.ts';
 
@@ -51,6 +53,9 @@ export interface WebLab {
   // Mesa V1
   readonly defaultMesaState: MesaState;
   exploreMesa(materialId: string, question: string, state: MesaState): Promise<MesaPreviewSet>;
+  /** Display labels, mapped from the strategy identifiers in mesa.ts. */
+  strategyLabel(strategyId: string): string;
+  territoryLabel(territory: 'medium' | 'unexpected'): string;
   /** Microphone capture: bytes always come from the CaptureFormatPolicy's chosen encoder. */
   ingest(input: ArrayBuffer, filename: string): Promise<Entity>;
   /** File import: bytes are of unknown, unverified origin. Decode is the only gate. */
@@ -66,6 +71,31 @@ export interface WebLab {
 
 const DEFAULT_INTENT = 'Exploración libre';
 
+/**
+ * Browser-local, explicitly NONCANONICAL storage for the lineage color
+ * registry. localStorage is chosen deliberately: the payload is a handful of
+ * short string->int pairs, it is trivially inspectable, and losing it costs
+ * only the specific colors previously shown -- never a Material, never
+ * genealogy, never anything in the Knowledge Graph. Keeping it out of
+ * RecordStore is the point: canonical persistence must not carry UI state.
+ */
+const LINEAGE_REGISTRY_KEY = 'alchemy.lineage-palette.v1';
+
+class LocalStorageLineageStore implements LineageRegistryStore {
+  async read(): Promise<Record<string, number>> {
+    try {
+      const raw = globalThis.localStorage?.getItem(LINEAGE_REGISTRY_KEY);
+      return raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    } catch {
+      return {}; // a corrupt or unavailable store degrades to fresh assignment
+    }
+  }
+  async write(assignments: Record<string, number>): Promise<void> {
+    try { globalThis.localStorage?.setItem(LINEAGE_REGISTRY_KEY, JSON.stringify(assignments)); }
+    catch { /* private mode or quota: colors simply are not remembered */ }
+  }
+}
+
 export async function openWebLab(): Promise<WebLab> {
   const records = await IndexedDbRecordStore.open('alchemy-records', CURRENT_SCHEMA);
   if ((await records.schemaVersion()) < CURRENT_SCHEMA.version) {
@@ -77,6 +107,7 @@ export async function openWebLab(): Promise<WebLab> {
   const service = new AlchemyService(records, content, registry);
   const queries = new AlchemyQueries(records, content);
   const families = new FamilyService(records, content, registry);
+  const lineageRegistry = new LineageColorRegistry(new LocalStorageLineageStore());
 
   const artist = await service.registerAgent({ kind: 'human', name: 'artist', version: '1' });
   const analyzer = await service.registerAgent({
@@ -140,6 +171,8 @@ export async function openWebLab(): Promise<WebLab> {
     },
 
     defaultMesaState: DEFAULT_MESA_STATE,
+    strategyLabel,
+    territoryLabel,
     async exploreMesa(materialId, question, state) {
       return service.runMesaExploration({
         materialId, researchIntentId: await intentFor(question),
@@ -203,7 +236,7 @@ export async function openWebLab(): Promise<WebLab> {
       return (await families.listPacks(familyId)).length;
     },
     async lineageColor(materialId) {
-      return lineageColorForMaterial(materialId, queries);
+      return lineageRegistry.colorForMaterial(materialId, queries);
     },
   };
 }
