@@ -165,13 +165,29 @@ function selectSource(material) {
   $('mesa-explore').disabled = false;
 }
 
+
+function readConditioningState() {
+  return {
+    gate: { enabled: $('cond-gate-enabled').checked, threshold: Number($('cond-gate-threshold').value) },
+    filter: { enabled: $('cond-filter-enabled').checked, amount: Number($('cond-filter-amount').value) },
+  };
+}
+
+function initConditioningControls() {
+  const d = state.lab.defaultConditioningState;
+  $('cond-gate-enabled').checked = d.gate.enabled;
+  $('cond-gate-threshold').value = String(d.gate.threshold);
+  $('cond-filter-enabled').checked = d.filter.enabled;
+  $('cond-filter-amount').value = String(d.filter.amount);
+}
+
 async function runExploration() {
   if (!state.source) return;
   $('explore').disabled = true;
   $('explore').textContent = 'Explorando…';
   try {
     const question = $('intent').value.trim() || 'Exploración libre';
-    const set = await state.lab.explore(state.source.id, question, 8);
+    const set = await state.lab.explore(state.source.id, question, 8, readConditioningState());
     state.previews = set.variations;
     renderPreviews();
     toast(`${set.variations.length} variaciones`);
@@ -260,7 +276,7 @@ async function runMesaExplorationUI() {
   try {
     const question = $('mesa-intent').value.trim() || 'Exploración libre';
     const mesaState = readMesaState();
-    const set = await state.lab.exploreMesa(state.source.id, question, mesaState);
+    const set = await state.lab.exploreMesa(state.source.id, question, mesaState, readConditioningState());
     state.mesaObservations = set.variations;
     await renderMesaResults();
     toast(`${set.variations.length} observaciones`);
@@ -312,17 +328,19 @@ async function renderMesaResults() {
   }
 }
 
-async function playMesaObservation(index) {
+function playMesaObservation(index) {
   const obs = state.mesaObservations[index];
   if (!obs) return;
-  if (state.playingMaterialId === `mesa:${index}`) { stopPlayback(); await renderMesaResults(); return; }
+  const id = `mesa:${index}`;
+  if (state.playingMaterialId === id) { stopPlayback(); updatePlayButtons(); return; }
   stopPlayback();
   const url = URL.createObjectURL(new Blob([obs.preview.bytes], { type: 'audio/wav' }));
   const audio = new Audio(url);
   audio.play();
-  audio.onended = () => { stopPlayback(); void renderMesaResults(); };
+  audio.onended = () => { stopPlayback(); updatePlayButtons(); };
   state.playbackAudio = audio;
-  state.playingMaterialId = `mesa:${index}`;
+  state.playingMaterialId = id;
+  updatePlayButtons();
 }
 
 async function keepMesaObservation(index) {
@@ -530,19 +548,43 @@ function stopPlayback() {
   state.playingMaterialId = null;
 }
 
-/** Re-renders whichever playback-aware view is currently visible. */
-async function refreshPlaybackViews() {
-  if (!$('family-detail').hidden) await renderFamilyDetail();
-  else await renderMaterials();
+/**
+ * Targeted update: only the Play controls' icon/active-state change when
+ * playback starts or stops. This replaced a full renderMaterials()/
+ * renderFamilyDetail() call, which rebuilt every visible card's innerHTML
+ * (including a fresh lineage-color round trip through IndexedDB per card)
+ * just to flip one icon — that full-list rebuild was the app's visible
+ * flash/flicker on every Play tap, root-caused by instrumenting the call:
+ * togglePlayMaterial -> refreshPlaybackViews -> renderMaterials -> innerHTML
+ * replacement of the entire #materials container.
+ *
+ * Nothing else — scroll position, Mesa sliders, selection mode, tabs,
+ * Family state, lineage colors — is touched by a play/pause action, because
+ * nothing else is re-rendered by it anymore.
+ */
+function updatePlayButtons() {
+  for (const btn of document.querySelectorAll('[data-play]')) {
+    btn.textContent = state.playingMaterialId === btn.dataset.play ? '⏸' : '▶';
+  }
+  for (const btn of document.querySelectorAll('[data-play-member]')) {
+    const playing = state.playingMaterialId === btn.dataset.playMember;
+    btn.textContent = playing ? '⏸' : '▶';
+    btn.closest('.member')?.classList.toggle('playing', playing);
+  }
+  for (const btn of document.querySelectorAll('[data-mesa-play]')) {
+    btn.textContent = state.playingMaterialId === `mesa:${btn.dataset.mesaPlay}` ? '⏸' : '▶';
+  }
 }
 
 /**
- * One shared player for both the Materials list and the Family screen — see
- * "reuse existing audio playback infrastructure" in the brief. Only one
- * Material plays at a time: starting B always stops A first.
+ * One shared player for the Materials list, the Family screen and Mesa
+ * results — see "reuse existing audio playback infrastructure" in the
+ * brief. Only one Material plays at a time: starting B always stops A first.
+ * Playback state is runtime-only UI state; see updatePlayButtons() above for
+ * why this no longer re-renders any list.
  */
 async function togglePlayMaterial(materialId) {
-  if (state.playingMaterialId === materialId) { stopPlayback(); await refreshPlaybackViews(); return; }
+  if (state.playingMaterialId === materialId) { stopPlayback(); updatePlayButtons(); return; }
   stopPlayback();
   const material = await state.lab.material(materialId);
   const bytes = material && await state.lab.audioFor(material);
@@ -550,10 +592,10 @@ async function togglePlayMaterial(materialId) {
   const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
   const audio = new Audio(url);
   audio.play();
-  audio.onended = async () => { stopPlayback(); await refreshPlaybackViews(); };
+  audio.onended = () => { stopPlayback(); updatePlayButtons(); };
   state.playbackAudio = audio;
   state.playingMaterialId = materialId;
-  await refreshPlaybackViews();
+  updatePlayButtons();
 }
 // Kept as an alias so the Family-screen call sites read naturally.
 const playMember = togglePlayMaterial;
@@ -782,7 +824,7 @@ function wire() {
 
   $('mesa-results').onclick = async (e) => {
     const d = e.target.dataset || {};
-    if (d.mesaPlay !== undefined) { await playMesaObservation(Number(d.mesaPlay)); await renderMesaResults(); }
+    if (d.mesaPlay !== undefined) playMesaObservation(Number(d.mesaPlay));
     if (d.mesaKeep !== undefined) await keepMesaObservation(Number(d.mesaKeep));
     if (d.mesaDrop !== undefined) await dropMesaObservation(Number(d.mesaDrop));
   };
@@ -930,6 +972,7 @@ async function boot() {
     } catch { $('status').textContent = 'local · offline'; }
     wire();
     initMesaSliders();
+    initConditioningControls();
 
     // Capture may be impossible on this device or over http://. Explain it up
     // front rather than letting the record button fail silently.
