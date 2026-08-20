@@ -1423,3 +1423,106 @@ across all of them.
 probe against the built bundle with `Buffer` deleted and no `localStorage`
 available: `openLab()` resolves, labels map correctly, and the registry
 degrades to fresh assignment rather than crashing.
+
+## Playback flicker, and Source Conditioning V1 (Gate + Filter)
+
+### Playback flicker — root cause, then fixed
+
+Instrumented the call rather than guessing: `togglePlayMaterial` →
+`refreshPlaybackViews()` → `renderMaterials()` (or `renderFamilyDetail()`) →
+full `innerHTML` replacement of the entire container, including a fresh
+lineage-color round trip through IndexedDB for every visible card — all of
+that, on every single Play tap, to flip one ▶/⏸ icon. That full-list rebuild
+was the visible flash.
+
+**Fix.** `updatePlayButtons()` updates only the specific play controls'
+icon/active-state directly, with no re-render of anything else. Nothing else
+— scroll position, Mesa sliders, selection mode, tabs, Family state, lineage
+colors — is touched by a play/pause action, because nothing else runs.
+`playMesaObservation`, which had the identical defect for Mesa results
+(`renderMesaResults()` on every tap), was unified onto the same path rather
+than patched separately, so there is one playback-icon-update mechanism, not
+two.
+
+### Source Conditioning V1
+
+**Two deterministic, portable, click-safe modules**, additive in
+`src/audio/operations.ts`:
+
+- **`applyGate`** — not a hard cut. Computes RMS over 5ms windows, derives a
+  raw target gain per window (1 above threshold, a floor of 0.12 below —
+  attenuates, never silences), smooths the gain across windows with separate
+  attack (fast, 0.6) and release (slow, 0.08) rates, then applies gain
+  per-sample via linear interpolation between window centers so no sample
+  sees a stepped discontinuity. Measured on a synthetic mixed fixture (quiet
+  broadband noise + a loud foreground event): quiet-region RMS dropped
+  ~85–90%, active-region RMS stayed at ~99% of original.
+- **`highPassFilter`** — a deterministic one-pole (RC-style) high-pass,
+  applied independently per channel so stereo balance is never disturbed.
+  `cutoffHz ≤ 0` is a literal no-op. Measured on a synthetic
+  rumble(40Hz)+useful-tone(800Hz) fixture: 200Hz selectively suppressed the
+  rumble while leaving the useful band essentially untouched.
+
+**Parameter mapping**, chosen from those measurements, not guessed: Umbral
+0–100 → gate RMS threshold 0.01–0.12; Limpieza 0–100 → high-pass cutoff
+0–200Hz (0 is a literal no-op, so Limpieza=0 with the module enabled reads
+identically to disabled).
+
+**Shared boundary, `src/domain/alchemy/conditioning.ts`.** `InputConditioningState`
+(`gate: {enabled, threshold}`, `filter: {enabled, amount}`), both OFF by
+default. `applyConditioning(bytes, state)` is the one function both
+`runResearchConfiguration` and `runMesaExploration` call before rendering —
+neither duplicates this DSP path. **Bypass invariant, verified literally**:
+with both disabled, `applyConditioning` returns the exact same `Uint8Array`
+reference passed in, not merely acoustically-equivalent bytes — confirmed
+`fragment-exploration-v1@1.0.0`'s golden hash is unaffected.
+
+**Persistence boundary, explicit.** Conditioning operates only on the
+in-memory exploration input buffer. The canonical Material's stored bytes
+are never reassigned — verified by re-fetching the source Material's content
+by its original hash after conditioning ran and confirming it decodes to the
+same hash. If nothing is ever Retained, no trace of conditioning exists
+anywhere. When something *is* Retained, `conditioningId`, `conditioningVersion`,
+the full `conditioningState`, and the resolved numeric parameters all land in
+`attributes.parameters` through the same verbatim-copy mechanism established
+for `fragment-exploration-v1` and Mesa — no change to `retain()` was needed.
+
+**Independent of Mesa's versioning**, by design: `mesa-exploration-v1` remains
+at its current revision; conditioning is `input-conditioning-v1@1.0.0`, a
+separate, optional upstream stage. Mesa without conditioning is byte-identical
+to before this feature existed.
+
+**Test correction worth recording.** The first version of the "gate
+transitions are smoothed" test used a fixture with an instantaneous
+amplitude jump in the *source* signal (silence to full amplitude in one
+sample) and measured raw output-sample deltas — which meant the test was
+partly measuring the source's own discontinuity, not the gate's behavior.
+Rewritten twice: first to measure implied gain (output/input ratio) instead
+of raw samples — which then produced a false failure of its own, from
+dividing by near-zero samples at sine-wave zero-crossings, a numerically
+unstable measurement unrelated to audio quality — and finally to sample one
+comfortably-large peak per 5ms window and check gain continuity at the
+window timescale, which is the actual timescale the smoothing algorithm
+operates on and the property it actually guarantees.
+
+**Measured evidence:** 251/251 tests (229→251, 22 added). Bypass path
+confirmed via the existing `fragment-exploration-v1@1.0.0` golden hash.
+Combined Gate+Filter deterministic together. Both Rápida and Mesa verified to
+preserve their existing counts (8 variations; 4 Medium + 4 Unexpected) under
+conditioning. Family/DNA Pack behavior unaffected. Zero clipping across every
+fixture tested.
+
+### Files added
+
+`src/domain/alchemy/conditioning.ts`, `tests/integration/conditioning.test.ts`.
+
+### Files modified
+
+`src/audio/operations.ts` (additive: `applyGate`, `highPassFilter`),
+`src/domain/alchemy/service.ts` (`runResearchConfiguration` and
+`runMesaExploration` both gain an optional `conditioning` parameter, applied
+before rendering; both preserve full backward compatibility when omitted),
+`src/web/lab.ts` (`defaultConditioningState`, conditioning threaded through
+`explore`/`exploreMesa`), `web/app.js` (playback flicker fix; Fuente panel
+reads Gate/Filter controls), `web/index.html` (Fuente panel: two toggles, two
+sliders, shared above both Rápida and Mesa).
