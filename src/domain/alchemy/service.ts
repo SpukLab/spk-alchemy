@@ -20,6 +20,9 @@ import type { ResearchConfiguration } from './research-configuration.ts';
 import { describeParameters } from './research-configuration.ts';
 import type { PreviewSet, PreviewVariation } from './exploration.ts';
 import { decodeWav } from '../../audio/wav.ts';
+import { applyConditioning, DEFAULT_CONDITIONING_STATE, resolveConditioningParameters,
+  CONDITIONING_CONFIGURATION_ID, CONDITIONING_VERSION } from './conditioning.ts';
+import type { InputConditioningState } from './conditioning.ts';
 import type { MesaState, Territory, PreservationAnchor } from './mesa.ts';
 import {
   runMesaExploration as runMesaExplorationEngine, validateMesaState, serializeMesaState,
@@ -306,6 +309,8 @@ export class AlchemyService {
     baseSeed: number;
     variationCount?: number;
     agentId: string;
+    /** Source Conditioning boundary. Omitted or both-disabled is a byte-exact bypass. */
+    conditioning?: InputConditioningState;
   }): Promise<PreviewSet> {
     const agent = await this.#requireAgent(input.agentId);
     const material = await this.#requireEntity(input.materialId);
@@ -315,8 +320,14 @@ export class AlchemyService {
         `exploration references a Research Intent that does not exist: ${input.researchIntentId}`);
     }
     const hash = String(material.attributes.contentHash);
-    const bytes = await this.#content.get(hash);
-    if (!bytes) throw new IntegrityError(`missing content ${hash} for material ${material.id}`);
+    const storedBytes = await this.#content.get(hash);
+    if (!storedBytes) throw new IntegrityError(`missing content ${hash} for material ${material.id}`);
+    // Conditioning affects only the exploration INPUT BUFFER. The canonical
+    // Material bytes in storage (storedBytes) are never reassigned or
+    // overwritten -- `bytes` below is what render() consumes, never what
+    // gets persisted anywhere as Material content.
+    const conditioningState = input.conditioning ?? DEFAULT_CONDITIONING_STATE;
+    const bytes = applyConditioning(storedBytes, conditioningState);
 
     const cfg = input.configuration;
     const audio = decodeWav(bytes);
@@ -355,7 +366,11 @@ export class AlchemyService {
         experimentId: experiment.id,
         sourceMaterialIds: [material.id],
         operation: cfg.id,
-        parameters: { configurationId: cfg.id, configurationVersion: cfg.version, seed },
+        parameters: {
+          configurationId: cfg.id, configurationVersion: cfg.version, seed,
+          conditioningId: CONDITIONING_CONFIGURATION_ID, conditioningVersion: CONDITIONING_VERSION,
+          conditioningState, conditioningResolved: resolveConditioningParameters(conditioningState),
+        },
         implementationVersion: cfg.implementationVersion,
         bytes: outputBytes,
         contentHash: outputHash,
@@ -526,6 +541,8 @@ export class AlchemyService {
   async runMesaExploration(input: {
     materialId: string; researchIntentId: string;
     mesaState: MesaState; baseSeed: number; agentId: string;
+    /** Same shared Source Conditioning boundary Rápida uses. */
+    conditioning?: InputConditioningState;
   }): Promise<MesaPreviewSet> {
     const agent = await this.#requireAgent(input.agentId);
     const material = await this.#requireEntity(input.materialId);
@@ -535,8 +552,10 @@ export class AlchemyService {
         `Mesa exploration references a Research Intent that does not exist: ${input.researchIntentId}`);
     }
     const hash = String(material.attributes.contentHash);
-    const bytes = await this.#content.get(hash);
-    if (!bytes) throw new IntegrityError(`missing content ${hash} for material ${material.id}`);
+    const storedBytes = await this.#content.get(hash);
+    if (!storedBytes) throw new IntegrityError(`missing content ${hash} for material ${material.id}`);
+    const conditioningState = input.conditioning ?? DEFAULT_CONDITIONING_STATE;
+    const bytes = applyConditioning(storedBytes, conditioningState);
 
     const mesaState = validateMesaState(input.mesaState);
 
@@ -566,6 +585,8 @@ export class AlchemyService {
         parameters: {
           mesaState, mesaStateSerialized: serializeMesaState(mesaState),
           territory: obs.territory, strategyId: obs.strategyId, anchor: obs.anchor,
+          conditioningId: CONDITIONING_CONFIGURATION_ID, conditioningVersion: CONDITIONING_VERSION,
+          conditioningState, conditioningResolved: resolveConditioningParameters(conditioningState),
         },
         exploration: {
           configurationId: MESA_CONFIGURATION_ID, configurationVersion: MESA_VERSION,
