@@ -196,3 +196,117 @@ export function loopRegion(
   for (let r = 0; r < repeats; r++) out.set(region, r * region.length);
   return out;
 }
+
+// ---- Source conditioning (input-conditioning-v1) ---------------------------
+// Additive only: nothing above this line is modified. These operate on the
+// EXPLORATION INPUT BUFFER only, never on canonical Material bytes in
+// storage — the caller decides what to condition, this module has no
+// persistence awareness at all.
+
+/**
+ * Deterministic, click-safe noise gate.
+ *
+ * NOT a hard cut (`if sample < threshold: sample = 0`), which would produce
+ * the same class of discontinuity clicks already solved for slice boundaries.
+ * Works on short windows, smooths the gain envelope across windows with
+ * separate attack/release rates (fast attack, slow release — the standard
+ * shape that keeps transients intact while still closing gradually on
+ * silence), then applies the resulting gain per-sample with linear
+ * interpolation between window centers so no single sample jumps.
+ *
+ * `thresholdRms` is a normalized RMS in [0,1], compared against each
+ * window's own RMS — interpretable relative to signal energy, never a raw
+ * PCM amplitude cutoff. The floor (not zero) means quiet regions are
+ * attenuated, never fully silenced: the gate reduces background noise, it
+ * does not claim to remove noise buried inside active signal.
+ */
+export const GATE_WINDOW_MS = 5;
+export const GATE_FLOOR = 0.12;
+const GATE_ATTACK_COEFF = 0.6;  // fast: open quickly on real signal
+const GATE_RELEASE_COEFF = 0.08; // slow: close gradually, no chatter
+
+export function applyGate(
+  samples: Int16Array, channels: number, sampleRate: number, thresholdRms: number,
+): Int16Array {
+  const totalFrames = channels > 0 ? samples.length / channels : 0;
+  if (totalFrames === 0) return samples;
+  const windowFrames = Math.max(1, Math.round((sampleRate * GATE_WINDOW_MS) / 1000));
+  const windowCount = Math.max(1, Math.ceil(totalFrames / windowFrames));
+
+  // Per-window RMS -> raw target gain (1 above threshold, floor below).
+  const targets = new Float64Array(windowCount);
+  for (let w = 0; w < windowCount; w++) {
+    const start = w * windowFrames;
+    const end = Math.min(totalFrames, start + windowFrames);
+    let sumSquares = 0;
+    let count = 0;
+    for (let f = start; f < end; f++) {
+      for (let c = 0; c < channels; c++) {
+        const v = samples[f * channels + c]! / 32768;
+        sumSquares += v * v;
+        count += 1;
+      }
+    }
+    const rms = count > 0 ? Math.sqrt(sumSquares / count) : 0;
+    targets[w] = rms >= thresholdRms ? 1 : GATE_FLOOR;
+  }
+
+  // Smooth across windows: fast attack, slow release. Deterministic, no
+  // platform-dependent behavior — plain IEEE754 arithmetic.
+  const smoothed = new Float64Array(windowCount);
+  smoothed[0] = targets[0]!;
+  for (let w = 1; w < windowCount; w++) {
+    const coeff = targets[w]! > smoothed[w - 1]! ? GATE_ATTACK_COEFF : GATE_RELEASE_COEFF;
+    smoothed[w] = smoothed[w - 1]! + coeff * (targets[w]! - smoothed[w - 1]!);
+  }
+
+  // Apply per-sample gain, linearly interpolated between window centers so
+  // no sample sees a stepped discontinuity.
+  const out = new Int16Array(samples.length);
+  const centerOf = (w: number): number => w * windowFrames + windowFrames / 2;
+  for (let f = 0; f < totalFrames; f++) {
+    const w = Math.min(windowCount - 1, Math.floor(f / windowFrames));
+    const wNext = Math.min(windowCount - 1, w + 1);
+    const c0 = centerOf(w);
+    const c1 = centerOf(wNext);
+    const t = c1 > c0 ? Math.max(0, Math.min(1, (f - c0) / (c1 - c0))) : 0;
+    const gain = smoothed[w]! + t * (smoothed[wNext]! - smoothed[w]!);
+    for (let c = 0; c < channels; c++) {
+      const idx = f * channels + c;
+      out[idx] = Math.max(-32768, Math.min(32767, Math.round(samples[idx]! * gain)));
+    }
+  }
+  return out;
+}
+
+/**
+ * Deterministic one-pole high-pass filter (RC-style), applied independently
+ * per channel so stereo balance is never disturbed. Portable: pure
+ * arithmetic, no platform-specific DSP, identical in Node and the browser.
+ * `cutoffHz` below or equal to 0 is a no-op (returns the input unchanged),
+ * which is what makes the conditioning bypass path byte-identical to
+ * unconditioned audio.
+ */
+export function highPassFilter(
+  samples: Int16Array, channels: number, sampleRate: number, cutoffHz: number,
+): Int16Array {
+  if (cutoffHz <= 0 || channels <= 0) return samples;
+  const rc = 1 / (2 * Math.PI * cutoffHz);
+  const dt = 1 / sampleRate;
+  const alpha = rc / (rc + dt);
+  const totalFrames = samples.length / channels;
+  const out = new Int16Array(samples.length);
+  for (let c = 0; c < channels; c++) {
+    let prevIn = samples[c] ?? 0;
+    let prevOut = 0;
+    for (let f = 0; f < totalFrames; f++) {
+      const idx = f * channels + c;
+      const x = samples[idx]!;
+      const y = alpha * (prevOut + x - prevIn);
+      out[idx] = Math.max(-32768, Math.min(32767, Math.round(y)));
+      prevIn = x;
+      prevOut = y;
+    }
+  }
+  return out;
+}
