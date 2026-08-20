@@ -23,6 +23,8 @@ import { LineageColorRegistry } from '../domain/alchemy/lineage-registry.ts';
 import type { LineageRegistryStore } from '../domain/alchemy/lineage-registry.ts';
 import { DEFAULT_MESA_STATE } from '../domain/alchemy/mesa.ts';
 import { strategyLabel, territoryLabel } from '../domain/alchemy/mesa-labels.ts';
+import { DEFAULT_CONDITIONING_STATE } from '../domain/alchemy/conditioning.ts';
+import type { InputConditioningState } from '../domain/alchemy/conditioning.ts';
 import type { MesaState } from '../domain/alchemy/mesa.ts';
 import type { MesaPreviewSet } from '../domain/alchemy/service.ts';
 
@@ -52,7 +54,8 @@ export interface WebLab {
   lineageColor(materialId: string): Promise<string>;
   // Mesa V1
   readonly defaultMesaState: MesaState;
-  exploreMesa(materialId: string, question: string, state: MesaState): Promise<MesaPreviewSet>;
+  exploreMesa(materialId: string, question: string, state: MesaState,
+    conditioning?: InputConditioningState): Promise<MesaPreviewSet>;
   /** Display labels, mapped from the strategy identifiers in mesa.ts. */
   strategyLabel(strategyId: string): string;
   territoryLabel(territory: 'medium' | 'unexpected'): string;
@@ -60,7 +63,9 @@ export interface WebLab {
   ingest(input: ArrayBuffer, filename: string): Promise<Entity>;
   /** File import: bytes are of unknown, unverified origin. Decode is the only gate. */
   importFile(input: ArrayBuffer, filename: string): Promise<Entity>;
-  explore(materialId: string, question: string, variations: number): Promise<PreviewSet>;
+  explore(materialId: string, question: string, variations: number,
+    conditioning?: InputConditioningState): Promise<PreviewSet>;
+  readonly defaultConditioningState: InputConditioningState;
   retain(preview: Preview): Promise<Entity>;
   promote(materialId: string): Promise<void>;
   reject(materialId: string): Promise<void>;
@@ -163,20 +168,21 @@ export async function openWebLab(): Promise<WebLab> {
       return material;
     },
 
-    async explore(materialId, question, variations) {
+    async explore(materialId, question, variations, conditioning) {
       return service.runResearchConfiguration({
         materialId, configuration: DEFAULT_FRAGMENT_EXPLORATION,
         researchIntentId: await intentFor(question),
-        baseSeed: Date.now() >>> 0, variationCount: variations, agentId: artist.id });
+        baseSeed: Date.now() >>> 0, variationCount: variations, agentId: artist.id, conditioning });
     },
+    defaultConditioningState: DEFAULT_CONDITIONING_STATE,
 
     defaultMesaState: DEFAULT_MESA_STATE,
     strategyLabel,
     territoryLabel,
-    async exploreMesa(materialId, question, state) {
+    async exploreMesa(materialId, question, state, conditioning) {
       return service.runMesaExploration({
         materialId, researchIntentId: await intentFor(question),
-        mesaState: state, baseSeed: Date.now() >>> 0, agentId: artist.id });
+        mesaState: state, baseSeed: Date.now() >>> 0, agentId: artist.id, conditioning });
     },
 
     async retain(preview) { return (await service.retain(preview, artist.id)).material; },

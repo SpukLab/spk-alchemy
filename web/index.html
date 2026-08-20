@@ -167,6 +167,28 @@ audio{width:100%;margin-top:8px;filter:invert(.9) hue-rotate(180deg)}
     <h2>Exploración</h2>
     <div id="source" class="card"><div class="empty">Sin material seleccionado</div></div>
 
+    <div class="mesa-tool" id="conditioning-panel">
+      <h3>Fuente</h3>
+      <label class="pick" style="margin-bottom:10px">
+        <input type="checkbox" id="cond-gate-enabled">
+        <span style="flex:1">Reducir ruido de fondo</span>
+      </label>
+      <label class="mesa-slider">
+        <div class="mesa-slider-label">Umbral</div>
+        <input type="range" id="cond-gate-threshold" min="0" max="100" value="30">
+        <div class="mesa-slider-ends"><span>SUAVE</span><span>AGRESIVO</span></div>
+      </label>
+      <label class="pick" style="margin:14px 0 10px">
+        <input type="checkbox" id="cond-filter-enabled">
+        <span style="flex:1">Limpiar graves</span>
+      </label>
+      <label class="mesa-slider">
+        <div class="mesa-slider-label">Limpieza</div>
+        <input type="range" id="cond-filter-amount" min="0" max="100" value="30">
+        <div class="mesa-slider-ends"><span>SIN CAMBIO</span><span>MARCADA</span></div>
+      </label>
+    </div>
+
     <div class="tabs" role="tablist" id="explore-mode-tabs">
       <button role="tab" data-mode="quick" aria-selected="true">Rápida</button>
       <button role="tab" data-mode="mesa" aria-selected="false">Mesa</button>
