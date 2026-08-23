@@ -101,17 +101,23 @@ test('exploration layers introduce no Node or UI dependency', async () => {
     'src/audio/operations.ts',
     'src/domain/alchemy/research-configuration.ts',
     'src/domain/alchemy/exploration.ts',
+    'src/domain/alchemy/mesa.ts',
+    'src/domain/alchemy/mesa-events.ts',
   ]) {
     const source = await readFile(file, 'utf8');
-    for (const spec of ['node:fs', 'node:path', 'node:os', 'node:sqlite', 'document', 'window']) {
-      assert.ok(!new RegExp(`from '${spec}'|\\b${spec}\\.`).test(source),
-        `${file} must not depend on ${spec}`);
-    }
-    // Strip comments first: a comment saying "no Math.random" is documentation,
-    // not a call. The rule is about executable code.
+    // Strip comments first, exactly like the Math.random check below and the
+    // portable-globals check further down this file: prose describing a
+    // "sliding window" or "browser window" is documentation, not a reference
+    // to the browser global, any more than a comment mentioning SQL syntax
+    // is a query. Only executable code should be scanned for real imports
+    // or real global usage.
     const code = source
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '');
+    for (const spec of ['node:fs', 'node:path', 'node:os', 'node:sqlite', 'document', 'window']) {
+      assert.ok(!new RegExp(`from '${spec}'|\\b${spec}\\.`).test(code),
+        `${file} must not depend on ${spec}`);
+    }
     assert.ok(!/Math\.random\s*\(/.test(code),
       `${file} must not use unseeded randomness`);
   }
