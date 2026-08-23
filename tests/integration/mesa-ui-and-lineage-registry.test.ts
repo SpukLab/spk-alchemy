@@ -52,6 +52,10 @@ const SLIDER_MAP: readonly [string, keyof typeof DEFAULT_MESA_STATE, string][] =
   ['mesa-microscopio-persistencia', 'microscopio', 'persistencia'],
   ['mesa-excitar-energia', 'excitar', 'energia'],
   ['mesa-excitar-estabilidad', 'excitar', 'estabilidad'],
+  ['mesa-goteros-cantidad', 'goteros', 'cantidad'],
+  ['mesa-goteros-variacion', 'goteros', 'variacion'],
+  ['mesa-acentos-presencia', 'acentos', 'presencia'],
+  ['mesa-acentos-seleccion', 'acentos', 'seleccion'],
 ];
 
 function makeSliders(defaults = DEFAULT_MESA_STATE): Map<string, { value: string }> {
@@ -63,7 +67,7 @@ function makeSliders(defaults = DEFAULT_MESA_STATE): Map<string, { value: string
 }
 function readFromSliders(sliders: Map<string, { value: string }>) {
   const s: Record<string, Record<string, number>> = {
-    fragmentar: {}, acelerar: {}, microscopio: {}, excitar: {} };
+    fragmentar: {}, acelerar: {}, microscopio: {}, excitar: {}, goteros: {}, acentos: {} };
   for (const [id, tool, control] of SLIDER_MAP) s[tool]![control] = Number(sliders.get(id)!.value);
   return s as unknown as typeof DEFAULT_MESA_STATE;
 }
@@ -90,10 +94,10 @@ test('the mode tabs are no longer clobbered by the materials tab selector (devic
   assert.ok(/querySelectorAll\('#explore-mode-tabs \[role=tab\]'\)/.test(app));
 });
 
-test('3+6..13. all eight controls map to exactly one distinct MesaState field', () => {
-  assert.equal(SLIDER_MAP.length, 8);
-  assert.equal(new Set(SLIDER_MAP.map(([id]) => id)).size, 8, 'eight distinct control ids');
-  assert.equal(new Set(SLIDER_MAP.map(([, t, c]) => `${t}.${c}`)).size, 8, 'eight distinct fields');
+test('3+6..13. all twelve controls map to exactly one distinct MesaState field', () => {
+  assert.equal(SLIDER_MAP.length, 12);
+  assert.equal(new Set(SLIDER_MAP.map(([id]) => id)).size, 12, 'twelve distinct control ids');
+  assert.equal(new Set(SLIDER_MAP.map(([, t, c]) => `${t}.${c}`)).size, 12, 'twelve distinct fields');
 
   // Each control, moved individually, changes exactly its own field.
   for (const [id, tool, control] of SLIDER_MAP) {
@@ -343,6 +347,7 @@ test('39. new modules remain free of Node built-ins', async () => {
   for (const file of [
     'src/domain/alchemy/lineage-registry.ts',
     'src/domain/alchemy/mesa-labels.ts',
+    'src/domain/alchemy/mesa-events.ts',
   ]) {
     const source = await readFile(file, 'utf8');
     assert.ok(!/from ['"]node:/.test(source), `${file} must not import Node built-ins`);

@@ -251,6 +251,10 @@ const MESA_SLIDER_IDS = [
   ['mesa-microscopio-persistencia', 'microscopio', 'persistencia'],
   ['mesa-excitar-energia', 'excitar', 'energia'],
   ['mesa-excitar-estabilidad', 'excitar', 'estabilidad'],
+  ['mesa-goteros-cantidad', 'goteros', 'cantidad'],
+  ['mesa-goteros-variacion', 'goteros', 'variacion'],
+  ['mesa-acentos-presencia', 'acentos', 'presencia'],
+  ['mesa-acentos-seleccion', 'acentos', 'seleccion'],
 ];
 
 function initMesaSliders() {
@@ -262,7 +266,7 @@ function initMesaSliders() {
 }
 
 function readMesaState() {
-  const s = { fragmentar: {}, acelerar: {}, microscopio: {}, excitar: {} };
+  const s = { fragmentar: {}, acelerar: {}, microscopio: {}, excitar: {}, goteros: {}, acentos: {} };
   for (const [id, tool, control] of MESA_SLIDER_IDS) {
     s[tool][control] = Number($(id).value);
   }
