@@ -1526,3 +1526,225 @@ before rendering; both preserve full backward compatibility when omitted),
 `explore`/`exploreMesa`), `web/app.js` (playback flicker fix; Fuente panel
 reads Gate/Filter controls), `web/index.html` (Fuente panel: two toggles, two
 sliders, shared above both Rápida and Mesa).
+
+## Mesa V1.1 — Goteros + Acentos (Eventos) — mesa-exploration-v1@1.1.0
+
+### Physical validation carried forward
+
+Mesa V1 (four tools, eight strategies, 4 Medium + 4 Unexpected) and Source
+Conditioning V1 were physically validated on iPhone prior to this sprint and
+are considered artistically useful and stable. This sprint adds one new
+creative capability — discrete local interventions in time — without
+touching that validated behavior, and without performing the deferred global
+visual-organization pass (see "Deferred" below).
+
+### Product framing
+
+Mesa's four existing tools all transform the whole Material continuously.
+The gap identified: local events that happen at particular moments, rather
+than continuously reshaping everything. Two new artist-facing concepts, both
+inside Mesa, neither a new canonical primitive, Entity type, lifecycle
+state, Knowledge type, or persistence authority:
+
+- **Goteros** — introduces new local appearances derived from the source
+  Material into the timeline (discrete drops/interruptions).
+- **Acentos** — emphasizes moments that already exist in the transformed
+  timeline, without touching every one of them.
+
+Both remain generative/research behavior, not a sequencer: no event
+dragging, no timeline editing, no LFO/automation UI, no external sample
+injection, no AI event detection.
+
+### Event detection
+
+`detectLocalEvents` (additive, `src/audio/operations.ts`) — deliberately
+unsophisticated, deterministic: RMS energy per ~12ms window, a candidate is
+any window whose energy rises meaningfully above the immediately preceding
+window (rise > 0.01, absolute energy > 0.02 floor). Candidates are ranked
+strongest-rise-first, frame index as tie-break — fully deterministic, no
+`Math.random`. Silence produces zero candidates (energy never rises above
+the floor); very short input still produces at least one safe window.
+Reused rather than duplicated: no new onset-detection library, and the
+existing `ANALYZER_V2` transient/spectral code was inspected first — kept
+separate because it summarizes a whole buffer to one number, where Eventos
+needed a ranked list of *positions*.
+
+### Goteros DSP
+
+`goterosDropletCount(cantidad)` is a pure, directly-tested function:
+`round((cantidad/100) * 24)`, monotonic non-decreasing, 0 at Cantidad=0
+(documented minimum: literally zero droplets, a true no-op), 24 at
+Cantidad=100. For each droplet: a detected candidate position in the
+**source** (falling back to a deterministic evenly-spaced position when
+there are no candidates — never `Math.random`), a droplet length of
+15–60ms internally derived from Variación (never surfaced as milliseconds
+to the artist), a 3ms click-safe boundary fade on both edges (reusing
+`applyBoundaryFade`), mixed additively (not concatenated — the underlying
+timeline stays present) into the Mesa-transformed output at a position on
+an even grid across the output, displaced by seed-derived jitter scaled by
+Variación (regular at low Variación, irregular-but-reproducible at high
+Variación). Droplet gain is fixed at 0.8× via the new `mixAdd` primitive,
+which clamps to int16 range per sample.
+
+### Acentos DSP
+
+`acentosSelectionCount(presencia, candidateCount)` is a pure, directly-tested
+function enforcing a **hard density ceiling** — at most half of detected
+candidates may ever be accented, *regardless* of Presencia, so "not every
+event becomes accented" is a structural guarantee, not a slider outcome.
+Selección chooses the selection strategy: below 50, the strongest-by-rise
+candidates (stable across regenerations at fixed Presencia); at/above 50, a
+seeded shuffle across the whole candidate pool (which moments get accented
+becomes changeable). Emphasis is a local, bounded gain boost (up to 1.6× at
+Presencia=100) via the new `localGainBoost` primitive, ramped in/out across
+a 4ms envelope so the boost itself introduces no click — never a
+replacement of the underlying signal, so an accented moment still sounds
+like itself, only more so.
+
+### Ordering and strategy integration
+
+`Canonical Source → Source Conditioning → Fragmentar/Acelerar/Microscopio/
+Excitar (per-fragment) → concatenation → Acentos → Goteros → preservation
+anchor (Unexpected only) → peak-safety ceiling`. Acentos runs first because
+it operates on moments already present in the Mesa-transformed timeline;
+Goteros then adds new source-derived appearances on top. Each of the eight
+strategies gets an `eventWeights: { goteros, acentos }` multiplier, applied
+exactly like the existing `weights` multiplier for the four continuous
+tools — e.g. Medium/Estructura keeps Goteros sparse (0.3×) but lets Acentos
+through strongly (0.8×); Unexpected/Microscópica pushes Goteros toward dense
+micro-droplets (1.3×); Unexpected/Energética favors fewer, stronger accents
+(1.4×) over many droplets (0.5×); Unexpected/Híbrida keeps both at 0.9× —
+directionally per the brief, explicitly documented as reversible defaults
+rather than corpus-frozen weights.
+
+### Versioning and backward compatibility
+
+`MESA_VERSION` moved from `'1.0.0'` to `'1.1.0'`; `MESA_CONFIGURATION_ID`
+unchanged. `MesaState` gained `goteros: {cantidad, variacion}` and
+`acentos: {presencia, seleccion}`. `validateMesaState` accepts the old
+four-field shape at runtime (fields simply absent) and fills the two new
+fields from `DEFAULT_MESA_STATE` — one source of truth, directly tested.
+Nothing already retained is mutated: a Material retained under
+`configurationVersion: '1.0.0'` keeps that value forever; the architecture
+never rewrites past provenance. `serializeMesaState` now emits all twelve
+controls, still fully deterministic.
+
+**Old-behavior verification.** Confirmed both by test and by a standalone
+reference-corpus run: with `goteros.cantidad=0` and `acentos.presencia=0`
+(a "V1.0-equivalent" state), the Eventos step is a literal no-op — nothing
+about the four original tools, their weights, strategies, anchors, or the
+peak-safety step changed. All existing Mesa tests (distribution, strategy
+identity, determinism, safety, cross-source behavior, genealogy) pass
+unmodified against the new code.
+
+### Reference corpus (metrics only — no artistic-quality claim)
+
+Four synthetic sources with deliberately different character (percussive/
+transient bursts, sustained/tonal steady tone, noisy/textural filtered
+broadband noise, voice-like fundamental+formants with vibrato), each run
+through V1.0-equivalent and V1.1-default settings, 8 observations each:
+
+- **Zero clipping** across all 32 V1.1 observations on every source.
+- **8/8 unique output hashes** on every source, both lanes.
+- **Peak/RMS spread preserved** across territories exactly as before (e.g.
+  percussive: peak 0.65–0.97, rms 0.066–0.150 across the eight strategies) —
+  Eventos does not flatten the intentional Medium/Unexpected contrast.
+- **Performance delta**: −9ms to +32ms for a full 8-observation Mesa run
+  versus V1.0-equivalent on the same source (worst case: voice-like, 15ms→
+  47ms for all 8 together). No Web Worker introduced — nowhere near the
+  threshold where one would be justified.
+
+### Source-diversity verification
+
+Directly confirmed (both by dedicated tests and a standalone script): two
+unrelated synthetic sources at identical Mesa settings and seed produce (a)
+different ranked event candidates from `detectLocalEvents`, (b) different
+source-region hashes, (c) zero collapsed Preview hashes across all eight
+strategies even at Goteros/Acentos maxed to 100/100, (d) distinct
+provenance by construction (each source is its own Material Entity). No
+convergence toward identical event content at any setting tested.
+
+### Provenance
+
+Retain copies, verbatim, into `attributes.parameters.mesaState` (containing
+the full `goteros`/`acentos` state alongside the four original tools),
+`territory`, `strategyId`, `anchor`, plus the existing
+`conditioningId`/`conditioningVersion`/`conditioningState` block when
+conditioning was used — no new persistence path was needed; this is the
+same verbatim-copy mechanism `fragment-exploration-v1` and Mesa V1.0 already
+established. `attributes.configurationVersion` reads `'1.1.0'`. Verified
+directly against the real service, and separately by exercising the actual
+built `dist/lab.js` bundle end-to-end in Node (openLab → ingest → Rápida →
+Mesa with Eventos → retain), confirming the round-tripped `mesaState`
+matches exactly what was sent and `configurationVersion` reads `'1.1.0'` on
+the retained Material.
+
+### UI
+
+Compact **EVENTOS** section added to the existing Mesa panel in
+`web/index.html` (four sliders: Goteros/Cantidad, Goteros/Variación,
+Acentos/Presencia, Acentos/Selección — same `.mesa-tool`/`.mesa-slider`
+pattern as the four existing tools, no new CSS needed) and wired in
+`web/app.js` (`MESA_SLIDER_IDS` grew from 8 to 12 entries; `readMesaState`/
+`initMesaSliders` cover the new fields with no special-casing). No other
+layout change was made — the global visual-organization pass remains
+deferred (see below). Verified in the actual production build (`dist/`):
+all four new slider ids present in the built HTML, no Node built-ins in the
+bundled JS, and `openLab()` through that exact bundle drives Mesa with
+Eventos end-to-end successfully.
+
+### Test correction worth recording
+
+One architecture test, `tests/architecture/core-purity.test.ts` →
+"exploration layers introduce no Node or UI dependency", false-failed after
+this sprint's changes — not from a real dependency, but because a doc
+comment in `operations.ts` ("...the immediately preceding *window. A*
+candidate is a *window* whose energy...") contained the literal substring
+`window.`, which the check's `\bwindow\.` pattern matched. Unlike the
+`Math.random` check three lines below it in the same test, this check did
+not strip comments before scanning — the same class of false positive
+already on record in this file for SQL-in-prose, `Math.random`-in-comment,
+and `RecordStore`-in-comment. Fixed by stripping comments before the
+`document`/`window` check too, matching the pattern already established
+elsewhere in the same file; the invariant itself (no real Node/browser
+dependency in the exploration/domain layers) is unchanged and unweakened.
+While in that test, `mesa.ts` and the new `mesa-events.ts` were added to its
+file enumeration — they are exploration-layer files this check should have
+been covering already.
+
+### Measured evidence
+
+269/269 tests (251→269, 22 added, 1 pre-existing false-positive test fixed).
+Reference corpus: 4 sources × 8 observations × 2 lanes, zero clipping, zero
+hash collisions. Source-diversity: zero collapse across unrelated sources at
+any Eventos setting tested, including maxed out. Provenance verified against
+both the direct service and the actual built browser bundle end-to-end.
+
+### Deferred (intentionally, per the brief)
+
+**Global visual-organization / hierarchy pass for the iPhone interface was
+NOT started.** Only the minimum layout addition needed for Eventos (one more
+`.mesa-tool` block, four more sliders) was made. This remains the next
+sprint, to inspect: overall vertical hierarchy; Capture/Material/
+Conditioning/Exploration/Results/Family relationships; section density;
+disclosure/collapse behavior; duplicated controls; tab hierarchy; visual
+rhythm; persistent vs. contextual information; scroll burden; one-handed
+iPhone use. Whether the interface now feels visually too long/dense is an
+open question for physical validation, and its answer directly informs
+whether and how soon that next sprint should start.
+
+### Files added
+
+`src/domain/alchemy/mesa-events.ts`.
+
+### Files modified
+
+`src/audio/operations.ts` (additive: `detectLocalEvents`, `mixAdd`,
+`localGainBoost`), `src/domain/alchemy/mesa.ts` (`MesaState` extended,
+`MESA_VERSION` → `1.1.0`, `eventWeights` added per strategy, Eventos wired
+into `renderOneObservation`), `web/index.html` (Eventos section: four
+sliders), `web/app.js` (`MESA_SLIDER_IDS` extended to 12),
+`tests/integration/mesa.test.ts` (22 new tests, E1–E22),
+`tests/integration/mesa-ui-and-lineage-registry.test.ts` (slider-count
+assertions updated 8→12), `tests/architecture/core-purity.test.ts`
+(comment-stripping fix + file-list extension, see above).
