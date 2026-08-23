@@ -18,6 +18,10 @@ import {
 } from '../../src/domain/alchemy/mesa.ts';
 import { FRAGMENT_EXPLORATION_V1, FRAGMENT_EXPLORATION_V1_1, FRAGMENT_EXPLORATION_V1_2 }
   from '../../src/domain/alchemy/research-configuration.ts';
+import {
+  goterosDropletCount, acentosSelectionCount, GOTEROS_MAX_DROPLETS, ACENTOS_DENSITY_CEILING_FRACTION,
+} from '../../src/domain/alchemy/mesa-events.ts';
+import { detectLocalEvents } from '../../src/audio/operations.ts';
 
 const src = (seed = 9, frames = 4000) => encodeWav(synthesize(seed, 8000, 1, frames));
 
@@ -260,10 +264,239 @@ test('40+41+42. unrelated sources do not collapse toward identical Unexpected ou
 
 test('47. Mesa modules remain free of Node built-ins', async () => {
   const { readFile } = await import('node:fs/promises');
-  for (const file of ['src/domain/alchemy/mesa.ts', 'src/audio/operations.ts']) {
+  for (const file of [
+    'src/domain/alchemy/mesa.ts', 'src/audio/operations.ts', 'src/domain/alchemy/mesa-events.ts',
+  ]) {
     const source = await readFile(file, 'utf8');
     assert.ok(!/from ['"]node:/.test(source), `${file} must not import Node built-ins`);
   }
+});
+
+// ================================================================================
+// Eventos (Goteros + Acentos) — mesa-exploration-v1@1.1.0
+// ================================================================================
+
+// ---- MesaState (new fields) ---------------------------------------------------
+
+test('E1+E2+E3+E4. Goteros/Acentos fields validate and clamp', () => {
+  const state = validateMesaState({
+    ...DEFAULT_MESA_STATE,
+    goteros: { cantidad: -10, variacion: 500 },
+    acentos: { presencia: 999, seleccion: -1 },
+  });
+  assert.equal(state.goteros.cantidad, 0);
+  assert.equal(state.goteros.variacion, 100);
+  assert.equal(state.acentos.presencia, 100);
+  assert.equal(state.acentos.seleccion, 0);
+});
+
+test('E5. old (pre-1.1.0) four-field MesaState still validates via documented defaults', () => {
+  const legacy = {
+    fragmentar: { escala: 60, desorden: 60 },
+    acelerar: { tiempo: 55, movimiento: 40 },
+    microscopio: { zoom: 55, persistencia: 45 },
+    excitar: { energia: 40, estabilidad: 55 },
+  } as unknown as Parameters<typeof validateMesaState>[0];
+  const validated = validateMesaState(legacy);
+  assert.deepEqual(validated.goteros, DEFAULT_MESA_STATE.goteros, 'documented default for a missing field');
+  assert.deepEqual(validated.acentos, DEFAULT_MESA_STATE.acentos, 'documented default for a missing field');
+  assert.equal(validated.fragmentar.escala, 60, 'the four original fields are unaffected');
+});
+
+test('E6. one source of truth: validated defaults for missing fields equal DEFAULT_MESA_STATE', () => {
+  assert.deepEqual(DEFAULT_MESA_STATE.goteros, validateMesaState(
+    { ...DEFAULT_MESA_STATE, goteros: undefined } as unknown as MesaStateLike).goteros);
+});
+type MesaStateLike = Parameters<typeof validateMesaState>[0];
+
+test('E7. serialization includes all twelve controls deterministically', () => {
+  const a = serializeMesaState(DEFAULT_MESA_STATE);
+  const b = serializeMesaState(DEFAULT_MESA_STATE);
+  assert.equal(a, b);
+  assert.equal(a.split(',').length, 12);
+});
+
+// ---- pure Goteros/Acentos density functions ------------------------------------
+
+test('E8. Goteros droplet count is monotonic non-decreasing in Cantidad, within documented bounds', () => {
+  let previous = -1;
+  for (let c = 0; c <= 100; c += 5) {
+    const count = goterosDropletCount(c);
+    assert.ok(count >= previous, `count must not decrease as Cantidad rises (at ${c})`);
+    assert.ok(count >= 0 && count <= GOTEROS_MAX_DROPLETS);
+    previous = count;
+  }
+  assert.equal(goterosDropletCount(0), 0, 'zero Cantidad produces the documented minimum: zero droplets');
+  assert.equal(goterosDropletCount(100), GOTEROS_MAX_DROPLETS);
+});
+
+test('E9. Acentos never selects every candidate, even at maximum Presencia', () => {
+  for (const candidateCount of [1, 2, 5, 10, 24]) {
+    const count = acentosSelectionCount(100, candidateCount);
+    assert.ok(count <= Math.ceil(candidateCount * ACENTOS_DENSITY_CEILING_FRACTION),
+      'a hard density ceiling applies regardless of Presencia');
+    if (candidateCount > 1) assert.ok(count < candidateCount, 'contrast survives: not everything is accented');
+  }
+  assert.equal(acentosSelectionCount(0, 10), 0, 'zero Presencia accents nothing');
+  assert.equal(acentosSelectionCount(50, 0), 0, 'no candidates means no accents, regardless of Presencia');
+});
+
+test('E10. local-event detection is deterministic, source-dependent, and safe on silence/short input', () => {
+  const silent = new Int16Array(4000);
+  assert.equal(detectLocalEvents(silent, 1, 100).length, 0, 'silence yields zero candidates');
+
+  const tiny = new Int16Array(20).fill(5000);
+  assert.doesNotThrow(() => detectLocalEvents(tiny, 1, 100), 'very short input remains safe');
+
+  const a = decodeWav(src(3, 4000));
+  const b = decodeWav(src(3, 4000));
+  assert.deepEqual(detectLocalEvents(a.samples, a.channels, 100), detectLocalEvents(b.samples, b.channels, 100),
+    'identical source yields identical candidate ordering');
+
+  const c = decodeWav(src(77, 4000));
+  const candidatesA = detectLocalEvents(a.samples, a.channels, 100);
+  const candidatesC = detectLocalEvents(c.samples, c.channels, 100);
+  assert.notDeepEqual(candidatesA, candidatesC, 'unrelated sources produce source-specific candidates');
+});
+
+// ---- Eventos integrated into Mesa rendering ------------------------------------
+
+test('E11. increasing Goteros Cantidad changes output while everything else stays fixed', () => {
+  const bytes = src(3, 6000);
+  const low = { ...DEFAULT_MESA_STATE, goteros: { cantidad: 0, variacion: 50 } };
+  const high = { ...DEFAULT_MESA_STATE, goteros: { cantidad: 100, variacion: 50 } };
+  const obsLow = runMesaExploration(bytes, low, 1000);
+  const obsHigh = runMesaExploration(bytes, high, 1000);
+  let differing = 0;
+  for (let i = 0; i < 8; i++) {
+    if (contentHash(obsLow[i].bytes) !== contentHash(obsHigh[i].bytes)) differing += 1;
+  }
+  assert.ok(differing > 0, 'Cantidad audibly affects at least some of the eight observations');
+});
+
+test('E12. increasing Acentos Presencia changes output while everything else stays fixed', () => {
+  const bytes = src(5, 6000);
+  const low = { ...DEFAULT_MESA_STATE, acentos: { presencia: 0, seleccion: 45 } };
+  const high = { ...DEFAULT_MESA_STATE, acentos: { presencia: 100, seleccion: 45 } };
+  const obsLow = runMesaExploration(bytes, low, 1000);
+  const obsHigh = runMesaExploration(bytes, high, 1000);
+  let differing = 0;
+  for (let i = 0; i < 8; i++) {
+    if (contentHash(obsLow[i].bytes) !== contentHash(obsHigh[i].bytes)) differing += 1;
+  }
+  assert.ok(differing > 0, 'Presencia audibly affects at least some of the eight observations');
+});
+
+test('E13. identical settings and seed produce identical Eventos output (determinism)', () => {
+  const bytes = src(9, 5000);
+  const state = { ...DEFAULT_MESA_STATE, goteros: { cantidad: 80, variacion: 90 },
+    acentos: { presencia: 80, seleccion: 90 } };
+  const a = runMesaExploration(bytes, state, 4242);
+  const b = runMesaExploration(bytes, state, 4242);
+  for (let i = 0; i < 8; i++) assert.deepEqual(Buffer.from(a[i].bytes), Buffer.from(b[i].bytes));
+});
+
+test('E14+E15. Eventos at maximum settings never clip and never break WAV structure', () => {
+  const bytes = src(3, 5000);
+  const extreme = {
+    ...DEFAULT_MESA_STATE,
+    goteros: { cantidad: 100, variacion: 100 }, acentos: { presencia: 100, seleccion: 100 },
+  };
+  const obs = runMesaExploration(bytes, extreme, 1000);
+  for (const o of obs) {
+    const audio = decodeWav(o.bytes);
+    for (const s of audio.samples) assert.ok(Math.abs(s) < 32768, 'no clipping beyond int16 range');
+    assert.equal(audio.samples.length % audio.channels, 0, 'frame-aligned');
+  }
+});
+
+test('E16. Eventos remain safe on silence and on very short sources', () => {
+  const silent = encodeWav({ sampleRate: 8000, channels: 1, samples: new Int16Array(2000) });
+  const extreme = {
+    ...DEFAULT_MESA_STATE,
+    goteros: { cantidad: 100, variacion: 100 }, acentos: { presencia: 100, seleccion: 100 },
+  };
+  assert.equal(runMesaExploration(silent, extreme, 1).length, 8);
+
+  const tiny = encodeWav({ sampleRate: 8000, channels: 1, samples: new Int16Array(64).fill(5000) });
+  const obs = runMesaExploration(tiny, extreme, 1);
+  assert.equal(obs.length, 8);
+  for (const o of obs) assert.ok(decodeWav(o.bytes).samples.length >= 0);
+});
+
+test('E17. Goteros/Acentos parameters differ by strategy (per-strategy eventWeights are real)', () => {
+  const all = [...MEDIUM_STRATEGIES, ...UNEXPECTED_STRATEGIES];
+  const goterosWeights = new Set(all.map((s) => s.eventWeights.goteros));
+  const acentosWeights = new Set(all.map((s) => s.eventWeights.acentos));
+  assert.ok(goterosWeights.size > 1, 'Goteros contribution differs across strategies');
+  assert.ok(acentosWeights.size > 1, 'Acentos contribution differs across strategies');
+  const structure = all.find((s) => s.id === 'medium-structure')!;
+  const microscopic = all.find((s) => s.id === 'unexpected-microscopic-deviation')!;
+  assert.notEqual(structure.eventWeights.goteros, microscopic.eventWeights.goteros,
+    'Medium/Estructura behaves differently from Unexpected/Microscópica');
+  const hybrid = all.find((s) => s.id === 'unexpected-hybrid-deviation')!;
+  assert.ok(hybrid.eventWeights.goteros <= 1.0 && hybrid.eventWeights.acentos <= 1.0,
+    'Hybrid does not become "maximum everything"');
+});
+
+test('E18. still exactly 8 observations, 4 Medium + 4 Unexpected, with Eventos active', () => {
+  const active = { ...DEFAULT_MESA_STATE, goteros: { cantidad: 60, variacion: 60 },
+    acentos: { presencia: 60, seleccion: 60 } };
+  const obs = runMesaExploration(src(3, 5000), active, 1000);
+  assert.equal(obs.length, 8);
+  assert.equal(obs.filter((o) => o.territory === 'medium').length, 4);
+  assert.equal(obs.filter((o) => o.territory === 'unexpected').length, 4);
+});
+
+test('E19. unrelated sources still do not collapse to identical output with Eventos active', () => {
+  const active = { ...DEFAULT_MESA_STATE, goteros: { cantidad: 100, variacion: 100 },
+    acentos: { presencia: 100, seleccion: 100 } };
+  const a = src(3, 4000), b = src(77, 4000);
+  const obsA = runMesaExploration(a, active, 1000);
+  const obsB = runMesaExploration(b, active, 1000);
+  let collapsed = 0;
+  for (let i = 0; i < 8; i++) if (contentHash(obsA[i].bytes) === contentHash(obsB[i].bytes)) collapsed += 1;
+  assert.equal(collapsed, 0, 'no strategy collapses across unrelated sources even with Eventos maxed out');
+});
+
+// ---- versioning -----------------------------------------------------------------
+
+test('E20. Mesa is now versioned 1.1.0; configuration id is unchanged', () => {
+  assert.equal(MESA_CONFIGURATION_ID, 'mesa-exploration-v1');
+  assert.equal(MESA_VERSION, '1.1.0');
+});
+
+test('E21. Retain records the new Mesa version and complete Eventos state in provenance', async () => {
+  const l = await lab();
+  const source = await l.service.importMaterial({ bytes: src(3), filename: 's.wav', agentId: l.artist.id });
+  const intent = await l.service.createResearchIntent({ question: 'q', agentId: l.artist.id });
+  const state = { ...DEFAULT_MESA_STATE, goteros: { cantidad: 70, variacion: 30 },
+    acentos: { presencia: 60, seleccion: 20 } };
+  const set = await l.service.runMesaExploration({
+    materialId: source.id, researchIntentId: intent.id, mesaState: state, baseSeed: 7, agentId: l.artist.id });
+  const r = await l.service.retain(set.variations[0]!.preview, l.artist.id);
+  assert.equal(r.material.attributes.configurationVersion, '1.1.0');
+  const p = r.material.attributes.parameters as Record<string, unknown>;
+  assert.deepEqual((p.mesaState as typeof state).goteros, state.goteros);
+  assert.deepEqual((p.mesaState as typeof state).acentos, state.acentos);
+  await l.records.close();
+});
+
+test('E22. a Mesa run with Eventos active still persists no Material of its own', async () => {
+  const { COLLECTIONS } = await import('../../src/core/primitives.ts');
+  const l = await lab();
+  const materialCount = async () => (await l.records.scan(COLLECTIONS.entities, null, 500)).items
+    .filter((e) => (e as { role?: string }).role === 'material').length;
+  const source = await l.service.importMaterial({ bytes: src(3), filename: 's.wav', agentId: l.artist.id });
+  const intent = await l.service.createResearchIntent({ question: 'q', agentId: l.artist.id });
+  const before = await materialCount();
+  await l.service.runMesaExploration({
+    materialId: source.id, researchIntentId: intent.id,
+    mesaState: { ...DEFAULT_MESA_STATE, goteros: { cantidad: 80, variacion: 80 },
+      acentos: { presencia: 80, seleccion: 80 } },
+    baseSeed: 1, agentId: l.artist.id });
+  assert.equal(await materialCount(), before, 'eight Previews, zero new Materials, even with Eventos active');
+  await l.records.close();
 });
 
 test('49. Family/DNA Pack workflows remain unaffected by Mesa', async () => {
