@@ -9,9 +9,11 @@ import {
   RESEARCH_CONFIGURATION_SCHEMA_VERSION,
 } from './research-configuration.ts';
 import type { ResearchConfiguration } from './research-configuration.ts';
+import { applyEventos } from './mesa-events.ts';
+import type { EventoParams } from './mesa-events.ts';
 
 /**
- * Mesa V1 — mesa-exploration-v1@1.0.0.
+ * Mesa V1 — mesa-exploration-v1@1.1.0.
  *
  * A separate, additive ResearchConfiguration. fragment-exploration-v1 (all
  * three versions) is untouched: nothing here imports or calls its render
@@ -23,10 +25,19 @@ import type { ResearchConfiguration } from './research-configuration.ts';
  * in memory. Nothing here is persisted as a structural primitive; what
  * eventually reaches Retain is ordinary provenance on the Material Entity,
  * exactly like fragment-exploration-v1 already does.
+ *
+ * 1.1.0 adds Goteros + Acentos (Eventos): discrete local interventions in
+ * time, additive to the four continuous/global tools below. 1.0.0's four
+ * tools, eight strategies, and 4-Medium/4-Unexpected distribution are
+ * unchanged; this version only adds a fifth conceptual capability plus two
+ * new MesaState fields, both defaulted for callers still passing the old
+ * four-field shape (see validateMesaState). Nothing already retained is
+ * mutated: past Materials keep whatever configurationVersion they were
+ * retained under.
  */
 
 export const MESA_CONFIGURATION_ID = 'mesa-exploration-v1';
-export const MESA_VERSION = '1.0.0';
+export const MESA_VERSION = '1.1.0';
 export const MESA_SCHEMA_VERSION = RESEARCH_CONFIGURATION_SCHEMA_VERSION;
 
 // ---- MesaState ---------------------------------------------------------------
@@ -36,17 +47,29 @@ export interface MesaState {
   acelerar: { tiempo: number; movimiento: number };
   microscopio: { zoom: number; persistencia: number };
   excitar: { energia: number; estabilidad: number };
+  goteros: { cantidad: number; variacion: number };
+  acentos: { presencia: number; seleccion: number };
 }
 
 /** Documented clamping rule: every control is clamped into [0, 100], never rejected. */
 const clamp01to100 = (v: number): number => Math.max(0, Math.min(100, Math.round(v)));
 
+/**
+ * Validates and clamps every control. Also accepts the pre-1.1.0 four-field
+ * shape at runtime (goteros/acentos absent): a caller that never learned
+ * about Eventos gets the documented defaults for the new fields rather than
+ * a crash. Two zero/one source of truth: DEFAULT_MESA_STATE.
+ */
 export function validateMesaState(state: MesaState): MesaState {
+  const goteros = state.goteros ?? DEFAULT_MESA_STATE.goteros;
+  const acentos = state.acentos ?? DEFAULT_MESA_STATE.acentos;
   return {
     fragmentar: { escala: clamp01to100(state.fragmentar.escala), desorden: clamp01to100(state.fragmentar.desorden) },
     acelerar: { tiempo: clamp01to100(state.acelerar.tiempo), movimiento: clamp01to100(state.acelerar.movimiento) },
     microscopio: { zoom: clamp01to100(state.microscopio.zoom), persistencia: clamp01to100(state.microscopio.persistencia) },
     excitar: { energia: clamp01to100(state.excitar.energia), estabilidad: clamp01to100(state.excitar.estabilidad) },
+    goteros: { cantidad: clamp01to100(goteros.cantidad), variacion: clamp01to100(goteros.variacion) },
+    acentos: { presencia: clamp01to100(acentos.presencia), seleccion: clamp01to100(acentos.seleccion) },
   };
 }
 
@@ -54,13 +77,17 @@ export function validateMesaState(state: MesaState): MesaState {
  * Default: visible transformation without starting at maximum intensity,
  * chosen after generating the reference corpus described in the findings —
  * not a neutral 50/50/50/50 default, per the artist's stated preference for
- * moving away from the source.
+ * moving away from the source. Goteros/Acentos defaults follow the same
+ * philosophy at moderate territory (suggested starting values from the
+ * 1.1.0 brief): present and audible, not maximal, not silent.
  */
 export const DEFAULT_MESA_STATE: MesaState = {
   fragmentar: { escala: 60, desorden: 60 },
   acelerar: { tiempo: 55, movimiento: 40 },
   microscopio: { zoom: 55, persistencia: 45 },
   excitar: { energia: 40, estabilidad: 55 },
+  goteros: { cantidad: 35, variacion: 50 },
+  acentos: { presencia: 40, seleccion: 45 },
 };
 
 /** Deterministic serialization used for provenance and for seed derivation. */
@@ -69,6 +96,7 @@ export function serializeMesaState(state: MesaState): string {
   return [
     s.fragmentar.escala, s.fragmentar.desorden, s.acelerar.tiempo, s.acelerar.movimiento,
     s.microscopio.zoom, s.microscopio.persistencia, s.excitar.energia, s.excitar.estabilidad,
+    s.goteros.cantidad, s.goteros.variacion, s.acentos.presencia, s.acentos.seleccion,
   ].join(',');
 }
 
@@ -85,6 +113,13 @@ export interface MesaStrategy {
   territory: Territory;
   /** Multiplies MesaState intensities; each strategy emphasizes different tools. */
   weights: { fragmentar: number; acelerar: number; microscopio: number; excitar: number };
+  /**
+   * Multiplies Goteros/Acentos intensities, exactly like `weights` does for
+   * the four continuous tools -- how much each strategy lets Eventos
+   * contribute. Directional per the 1.1.0 brief; not yet corpus-tuned, so
+   * treat these as reversible defaults, not frozen weights.
+   */
+  eventWeights: { goteros: number; acentos: number };
   /** Unexpected only. Medium strategies stay close to source by construction (no anchor needed). */
   anchor: PreservationAnchor;
   /**
@@ -101,15 +136,19 @@ export interface MesaStrategy {
 export const MEDIUM_STRATEGIES: readonly MesaStrategy[] = [
   { id: 'medium-structure', territory: 'medium',
     weights: { fragmentar: 0.8, acelerar: 0.35, microscopio: 0.25, excitar: 0.25 },
+    eventWeights: { goteros: 0.3, acentos: 0.8 }, // few Goteros; meaningful Acentos
     anchor: null, dominantTreatment: 'balanced' },
   { id: 'medium-fragment', territory: 'medium',
     weights: { fragmentar: 1.0, acelerar: 0.25, microscopio: 0.5, excitar: 0.35 },
+    eventWeights: { goteros: 0.6, acentos: 0.6 }, // moderate Goteros derived from slices; moderate accents
     anchor: null, dominantTreatment: 'balanced' },
   { id: 'medium-temporal', territory: 'medium',
     weights: { fragmentar: 0.45, acelerar: 1.0, microscopio: 0.25, excitar: 0.25 },
+    eventWeights: { goteros: 0.25, acentos: 0.7 }, // sparse Goteros; accent timing interacts with temporal scaling
     anchor: null, dominantTreatment: 'balanced' },
   { id: 'medium-texture', territory: 'medium',
     weights: { fragmentar: 0.35, acelerar: 0.25, microscopio: 0.95, excitar: 0.6 },
+    eventWeights: { goteros: 0.5, acentos: 0.35 }, // microscopic droplets; subtle accents
     anchor: null, dominantTreatment: 'balanced' },
 ];
 
@@ -117,15 +156,19 @@ export const MEDIUM_STRATEGIES: readonly MesaStrategy[] = [
 export const UNEXPECTED_STRATEGIES: readonly MesaStrategy[] = [
   { id: 'unexpected-temporal-deviation', territory: 'unexpected',
     weights: { fragmentar: 0.4, acelerar: 1.6, microscopio: 0.2, excitar: 0.4 },
+    eventWeights: { goteros: 0.9, acentos: 0.6 }, // irregular temporal droplets; displaced accents
     anchor: 'transient-peak', dominantTreatment: 'temporal-alternation' },
   { id: 'unexpected-microscopic-deviation', territory: 'unexpected',
     weights: { fragmentar: 0.25, acelerar: 0.25, microscopio: 1.8, excitar: 0.3 },
+    eventWeights: { goteros: 1.3, acentos: 0.8 }, // dense micro-droplets; repeated tiny accent structures
     anchor: 'texture-window', dominantTreatment: 'microscopic-lock' },
   { id: 'unexpected-energetic-deviation', territory: 'unexpected',
     weights: { fragmentar: 0.6, acelerar: 0.3, microscopio: 0.25, excitar: 1.9 },
+    eventWeights: { goteros: 0.5, acentos: 1.4 }, // fewer but stronger accented events; locally excited droplets
     anchor: 'onset', dominantTreatment: 'energetic-surge' },
   { id: 'unexpected-hybrid-deviation', territory: 'unexpected',
     weights: { fragmentar: 0.9, acelerar: 0.9, microscopio: 0.9, excitar: 0.9 },
+    eventWeights: { goteros: 0.9, acentos: 0.9 }, // strongest interaction; still bounded, not maximum everything
     anchor: 'fragment-identity', dominantTreatment: 'rotating-hybrid' },
 ];
 
@@ -178,6 +221,17 @@ function translate(state: MesaState, strategy: MesaStrategy, totalFrames: number
     timeRatioNum, timeRatioDen,
     microscopeRegionFrames, microscopeRepeats,
     exciteIntensity: energia, exciteInstability: estabilidad,
+  };
+}
+
+/** Applies each strategy's eventWeights the same way `translate` applies `weights`. */
+function translateEventos(state: MesaState, strategy: MesaStrategy): EventoParams {
+  const w = strategy.eventWeights;
+  return {
+    cantidad: Math.min(100, state.goteros.cantidad * w.goteros),
+    variacion: Math.min(100, state.goteros.variacion * w.goteros),
+    presencia: Math.min(100, state.acentos.presencia * w.acentos),
+    seleccion: Math.min(100, state.acentos.seleccion * w.acentos),
   };
 }
 
@@ -327,6 +381,14 @@ function renderOneObservation(
   }
 
   let samples = concatSamples(pieces);
+
+  // 5.5. Eventos: Acentos (emphasize existing moments), then Goteros
+  // (introduce new source-derived appearances). Both deterministic, both
+  // source-content-dependent, both weighted per-strategy exactly like the
+  // four continuous tools above.
+  const eventoParams = translateEventos(state, strategy);
+  const eventoSeed = operationSeed(strategySeed, 9);
+  samples = applyEventos(source, samples, source.channels, source.sampleRate, eventoParams, eventoSeed);
 
   // 6. Preservation anchor (Unexpected only).
   samples = applyAnchor(source, samples, source.channels, strategy.anchor);

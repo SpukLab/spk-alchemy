@@ -310,3 +310,115 @@ export function highPassFilter(
   }
   return out;
 }
+
+// ---- Mesa Eventos primitives (mesa-exploration-v1@1.1.0) --------------------
+// Additive only: nothing above this line is modified. Reused by Goteros and
+// Acentos (src/domain/alchemy/mesa-events.ts) — these are pure, frame-safe,
+// deterministic building blocks, exactly like the Mesa primitives above.
+
+export interface EventCandidate { frame: number; strength: number }
+
+/**
+ * Minimal deterministic local-event detector: per-window RMS energy compared
+ * to the immediately preceding window. A candidate is a window whose energy
+ * rises meaningfully -- a deliberately unsophisticated stand-in for onset
+ * detection, not a full onset-detection library. Silence produces zero
+ * candidates (energy never rises above the floor); very short input still
+ * produces at least one window safely.
+ *
+ * Ranking is deterministic: strongest rise first, frame index as tie-break.
+ */
+export function detectLocalEvents(
+  samples: Int16Array, channels: number, windowFrames: number,
+): EventCandidate[] {
+  const totalFrames = channels > 0 ? samples.length / channels : 0;
+  if (totalFrames === 0 || windowFrames <= 0) return [];
+  const windowCount = Math.max(1, Math.ceil(totalFrames / windowFrames));
+  const energies = new Float64Array(windowCount);
+  for (let w = 0; w < windowCount; w++) {
+    const start = w * windowFrames;
+    const end = Math.min(totalFrames, start + windowFrames);
+    let sumSquares = 0;
+    let count = 0;
+    for (let f = start; f < end; f++) {
+      for (let c = 0; c < channels; c++) {
+        const v = samples[f * channels + c]! / 32768;
+        sumSquares += v * v;
+        count += 1;
+      }
+    }
+    energies[w] = count > 0 ? Math.sqrt(sumSquares / count) : 0;
+  }
+  const candidates: EventCandidate[] = [];
+  const RISE_THRESHOLD = 0.01;
+  const FLOOR = 0.02;
+  for (let w = 0; w < windowCount; w++) {
+    const prev = w > 0 ? energies[w - 1]! : energies[w]!;
+    const rise = energies[w]! - prev;
+    if (rise > RISE_THRESHOLD && energies[w]! > FLOOR) {
+      candidates.push({ frame: w * windowFrames, strength: rise });
+    }
+  }
+  candidates.sort((a, b) => (b.strength - a.strength) || (a.frame - b.frame));
+  return candidates;
+}
+
+/**
+ * Mixes (adds, not replaces) `addition` into `base` starting at `atFrame`,
+ * with an integer gain applied to the addition only. Truncates the addition
+ * if it would run past the end of `base` -- never grows `base`. Peak safety
+ * is not this function's job: callers rely on Mesa's own final peak ceiling.
+ */
+export function mixAdd(
+  base: Int16Array, addition: Int16Array, atFrame: number, channels: number,
+  gainNumerator: number, gainDenominator: number,
+): Int16Array {
+  const baseFrames = channels > 0 ? base.length / channels : 0;
+  const addFrames = channels > 0 ? addition.length / channels : 0;
+  const start = Math.max(0, Math.min(atFrame, baseFrames));
+  const framesToMix = Math.max(0, Math.min(addFrames, baseFrames - start));
+  if (framesToMix <= 0) return base;
+  const out = Int16Array.from(base);
+  for (let f = 0; f < framesToMix; f++) {
+    for (let c = 0; c < channels; c++) {
+      const baseIdx = (start + f) * channels + c;
+      const addIdx = f * channels + c;
+      const scaled = Math.trunc((addition[addIdx]! * gainNumerator) / gainDenominator);
+      out[baseIdx] = Math.max(-32768, Math.min(32767, out[baseIdx]! + scaled));
+    }
+  }
+  return out;
+}
+
+/**
+ * Locally boosts (or cuts) gain over a short region, ramping in and out
+ * across `fadeFrames` at each edge so the boost itself introduces no click.
+ * This is Acentos' emphasis primitive: local, bounded, and reversible in
+ * character (a gain multiplier, never a replacement of the underlying
+ * signal), so the accented moment still sounds like itself, only more so.
+ */
+export function localGainBoost(
+  samples: Int16Array, channels: number, atFrame: number, lengthFrames: number,
+  gainNumerator: number, gainDenominator: number, fadeFrames: number,
+): Int16Array {
+  const totalFrames = channels > 0 ? samples.length / channels : 0;
+  const start = Math.max(0, Math.min(atFrame, totalFrames));
+  const length = Math.max(0, Math.min(lengthFrames, totalFrames - start));
+  if (length <= 0) return samples;
+  const out = Int16Array.from(samples);
+  const fade = Math.max(0, Math.min(fadeFrames, Math.floor(length / 2)));
+  const targetGain = gainNumerator / gainDenominator;
+  for (let f = 0; f < length; f++) {
+    let envelope = 1;
+    if (fade > 0) {
+      if (f < fade) envelope = (f + 1) / fade;
+      else if (f >= length - fade) envelope = (length - f) / fade;
+    }
+    const extraGain = 1 + envelope * (targetGain - 1);
+    for (let c = 0; c < channels; c++) {
+      const idx = (start + f) * channels + c;
+      out[idx] = Math.max(-32768, Math.min(32767, Math.round(samples[idx]! * extraGain)));
+    }
+  }
+  return out;
+}
