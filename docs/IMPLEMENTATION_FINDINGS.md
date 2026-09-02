@@ -1748,3 +1748,240 @@ sliders), `web/app.js` (`MESA_SLIDER_IDS` extended to 12),
 `tests/integration/mesa-ui-and-lineage-registry.test.ts` (slider-count
 assertions updated 8→12), `tests/architecture/core-purity.test.ts`
 (comment-stripping fix + file-list extension, see above).
+
+## Multi-Material Mesa — Source + Guest relational exploration (mesa-relational-v1@1.0.0)
+
+### Architectural finding — the strongest result of this sprint
+
+Multi-parent relational exploration required **no canonical or persistence
+redesign**. The existing architecture already supported it:
+
+- `createExperiment` already accepts `inputMaterialIds: readonly string[]`.
+- `retain()` already loops over `preview.sourceMaterialIds`, creating one
+  `derived_from` Relationship per parent -- it was never hardcoded to one.
+- `traverse()` (the BFS genealogy walk behind `ancestors`/`descendants`)
+  already follows every outgoing edge from a node, so a Material with two
+  `derived_from` edges was already traversed correctly.
+
+Building the whole relational layer touched none of this. Source and Guest
+are **execution roles, not Entity types**: both are ordinary Material
+Entities: which one is "Source" and which is "Guest" is a fact about a
+single call to `runRelationalMesaExploration`, not a fact stamped onto
+either Material.
+
+### Product framing
+
+`SOURCE (primary) + GUEST (optional, contributing) -> Mesa -> 4 Medium + 4
+Unexpected`, replacing single-Material Mesa exploration only when a Guest is
+actually chosen. SOLO (no Guest) is not a special case of the relational
+system -- it **is** Mesa V1.1, unmodified, byte for byte.
+
+- **Source** -- the primary temporal/material anchor. Defines MesaState's
+  four continuous tools, the eight strategies, the preservation anchor,
+  Mesa's own peak-safety ceiling, and -- critically -- the exact output
+  duration. Nothing about Source's role changes when a Guest is present.
+- **Guest** -- a contributing Material. Can only ever ADD local content on
+  top of an already-complete Source-driven observation (via `mixAdd`, which
+  never lengthens the buffer). Guest cannot equal Source (rejected, not
+  silently reinterpreted); a runtime Preview can never resolve as Guest
+  (Guest is always looked up as a persisted Entity); a rejected Material is
+  excluded from the default Guest candidate pool (a UI/query-layer filter --
+  `promotedMaterials()` -- not a service-level hard constraint).
+
+### Relation modes (mesa-relational-v1@1.0.0)
+
+Layered entirely on top of the unmodified Mesa V1.1 pipeline in a new
+module, `src/domain/alchemy/mesa-relational.ts` -- `mesa.ts` itself was not
+touched. Each observation is first rendered exactly as
+`runMesaExploration` already does; only when a Guest is present does a
+relational pass then mix Guest-derived content into that already-complete
+buffer. This is why **SOLO is not merely equivalent to Mesa V1.1, it is
+Mesa V1.1**: zero relational code executes when Guest is absent, verified
+byte-identical across every strategy and several sources.
+
+- **INYECTAR** -- timing: a deterministic grid across the Source
+  observation, jittered by seed (same style as Goteros). content: short
+  fragments derived from Guest's own detected events (or a deterministic
+  fallback position when Guest has none).
+- **ACENTUAR CON** -- timing: Source's OWN detected events (same
+  density-ceiling discipline as ordinary Acentos -- never every event).
+  content: a Guest-derived fragment mixed in at each selected Source
+  moment, replacing what would otherwise be a plain gain boost. This is the
+  explicit difference from ordinary Acentos: the emphasis material itself
+  comes from Guest, not from boosting Source's own signal.
+- **CONTAGIAR** -- timing: a dense deterministic grid across the Source
+  observation. content: many short, low-gain Guest microfragments (6-16ms,
+  0.3x-0.6x gain), deliberately smaller/quieter than Inyectar's so the
+  result reads as texture "picking up" Guest's character rather than
+  discrete events. Source macrostructure survives by construction (`mixAdd`
+  only adds onto the untouched Source buffer).
+- **CRUZAR** -- runs bounded contributions from all three other modes in
+  sequence over the same buffer, with Influence capped at 70 (even at
+  Influence=100) before being split three ways -- so Cruzar can never
+  become "maximum everything" or a raw A+B mix, while remaining the
+  strongest of the four relational modes.
+
+Reused rather than duplicated: `detectLocalEvents`, `mixAdd`,
+`applyBoundaryFade` (all from `operations.ts`, added in the Goteros/Acentos
+sprint) are the only DSP primitives every relation mode is built from -- no
+parallel event engine was introduced.
+
+### Guest Influence
+
+One macro, 0..100, validated and clamped like every other Mesa control.
+Influence 0 is a true no-op (verified byte-identical to the Guest-absent
+case). Measured directly (not just asserted): RMS grows meaningfully and
+boundedly across the sweep 0/25/50/75/100 for both a discrete-event mode
+(Inyectar) and a texture mode (Contagiar); peak stays bounded by Mesa's own
+peak-safety ceiling throughout and does **not** track Influence linearly --
+confirming Influence behaves as relational-contribution strength, not as a
+volume fader. The underlying droplet/accent *count* is strictly monotonic
+in Influence; a raw "differing sample count" metric is not guaranteed to be
+strictly monotonic step-by-step for a discrete-event mode (droplet
+positions are not nested across Influence levels, so overlap can
+occasionally shrink the marginal count at high density) -- measured for one
+fixture at 0/995/2790/14252/14238 across the sweep, a documented, expected
+characteristic rather than a defect.
+
+### Sample-rate / channel adaptation
+
+`adaptGuestToSource`: resamples Guest to Source's sample rate (nearest-
+neighbor via the existing `timeScaleFrames` primitive -- real-world
+duration preserved, rate changed) then adapts Guest's channel count to
+Source's topology -- mono-to-stereo duplicates the channel, stereo-to-mono
+takes a deterministic mean downmix. Equal shapes are a byte-preserving
+no-op (no unnecessary conversion). Fully deterministic, platform-free
+(verified against repeated calls producing identical output).
+
+### Duration rule
+
+Output duration always equals the Source-only Mesa duration, exactly --
+not approximately. This is a mathematical consequence of the design
+(`mixAdd` never lengthens the buffer it mixes into), verified across all
+eight strategies at Guest Influence 100 in every relation mode, and again
+under full role reversal (A-as-Source duration always matches A-only Mesa
+duration, never B's, and vice versa). Guest regions that would run past
+their own content are clamped, never wrapped or extended -- the same
+deterministic-clamp convention Goteros already established.
+
+### Role reversal
+
+Verified real and consistent, not incidental: Source A + Guest B produces
+a completely different result (all 8 observations differ) from Source B +
+Guest A under otherwise identical settings and seed, across all four
+relation modes. Provenance likewise distinguishes the roles explicitly --
+`attributes.parameters.relational.sourceMaterialId` and `.guestMaterialId`
+are separate, named fields, never an unordered pair.
+
+### Multi-parent provenance and genealogy
+
+Retain records, verbatim: Source ID, Guest ID (or `null` for SOLO),
+relation mode, Guest Influence, the full MesaState, territory, strategy,
+seed, and existing conditioning provenance -- no new persistence path was
+needed; this is the same verbatim-copy mechanism Mesa V1.1 already
+established. Genealogy traverses both parent branches correctly (verified
+directly against `queries.ancestors`), and second-generation relational
+exploration (a promoted relational Material used as Source, paired with a
+third independent Material as Guest) preserves the full historical
+genealogy while its *immediate* parents remain exactly the two direct
+inputs -- never flattened, never inflated to three.
+
+### Color hierarchy
+
+Implemented exactly as specified: a relational Preview declares both
+immediate ancestry ids before any Retain (`preview.sourceMaterialIds`); a
+retained-but-not-promoted relational Material shows ancestry markers only;
+Promote is the UI-level trigger (not a canonical lifecycle effect) that
+assigns a stable own "alchemical identity" color via a new
+`AlchemicalIdentityRegistry`, kept in a completely separate id-space/store
+from the existing root-lineage registry (`LineageColorRegistry`) -- neither
+can disturb the other. Ancestry markers survive identity assignment
+unchanged; existing parent colors never mutate; a third-generation result
+shows its two *immediate* parents' current markers (the promoted middle
+Material's own identity color, plus the third Material's lineage color),
+never the flattened complete A/B/C history. Single-lineage Materials are
+completely unaffected -- no new color assignment happens for them.
+
+**Noncanonical, verified directly**: scanned every persisted Entity in a
+full round-trip test and confirmed no `paletteSlot`/`identityColor`/
+`lineageColor` field ever appears in a canonical Entity's `attributes`.
+Both color registries live entirely in browser-local storage
+(`localStorage`, via two distinct keys), matching the existing root-lineage
+registry's own noncanonical precedent from an earlier sprint.
+
+**One real subtlety worth recording**: the identity registry and the
+root-lineage registry are two *independent* 10-slot palettes that happen to
+share the same ten hex values, not one shared palette. A promoted
+Material's own identity color can therefore coincidentally match a parent's
+lineage color -- measured directly at roughly a 20% rate across random
+material ids, since neither registry's slot search consults the other.
+This is accepted "deterministic reuse" behavior per the original design
+brief, not a defect; an earlier draft of the formal test suite wrongly
+asserted the two could never coincide and was corrected once the real
+collision rate was measured.
+
+### Artist-direction note (carried forward)
+
+Goteros/Acentos were useful as additional single-source variants, but their
+expected larger creative value is in relational use across different
+Materials -- this sprint is the first implementation of that direction.
+
+### Test correction worth recording
+
+The Influence sweep test (`R21+R22+R23`) initially asserted strict
+pointwise monotonicity of a raw "differing sample count" metric across the
+Influence sweep. Measuring the actual data (0/995/2790/14252/14238 for one
+fixture) showed a small, expected dip at the top end for a discrete-event
+mode (Inyectar): droplet *count* is strictly monotonic, but each Influence
+level uses different droplet spacing, so positions are not nested across
+levels and overlap can occasionally shrink the marginal differing-sample
+count at high density. This is exactly the caveat the sprint brief
+anticipated for discrete-event selection; the test was corrected to check
+the real invariants (clear growth through the low half, substantial
+endpoint growth, Influence 0 as a true no-op) instead of an unwarranted
+pointwise ordering.
+
+### Measured evidence
+
+- Formal suite: 269 -> 309 (40 new relational tests, 0 regressions), all
+  green across 5 repeated runs (200 executions) with no flakiness.
+- Reference corpus: 4 Source/Guest pairs (percussive+voice-like,
+  voice-like+percussive, sustained-tonal+noisy-textural,
+  noisy-textural+sustained-tonal) x 4 relation modes x 8 observations = 128
+  observations, zero clipped samples, all unique hashes.
+- Role-reversal corpus: all four relation modes, 8/8 hash differences under
+  role swap, 8/8 durations matching each Material's own Source-only Mesa
+  duration when acting as Source.
+- Influence sweep: RMS growth confirmed for Inyectar and Contagiar across
+  0/25/50/75/100, zero clipping at Influence 100 in any of the four modes.
+- Real built-bundle verification (`dist/lab.js` via `openLab()`, run 3x for
+  stability): Source/Guest import, Guest-candidate resolution excluding
+  Source, relational exploration reaching 8 observations with both parent
+  ids on the Preview, ancestry markers before Retain, identity-color
+  assignment on Promote, reload persistence (via an explicit in-memory
+  `localStorage` stub -- the harness has none by default, unlike a real
+  browser), second-generation relational genealogy, SOLO Mesa still
+  reporting version 1.1.0, Rápida unaffected, and Family/DNA Pack export
+  succeeding for a promoted relational Material. No Node built-ins in the
+  bundle.
+
+### Deferred (intentionally, per the brief)
+
+**Global interface visual organization remains deferred.** Only the
+relational controls required by this sprint were added to the existing
+Mesa panel (RELACIÓN tabs, Guest display/picker/Influencia). No full
+visual redesign was performed.
+
+### Files added
+
+`src/domain/alchemy/mesa-relational.ts`,
+`tests/integration/mesa-relational.test.ts`.
+
+### Files modified
+
+`src/domain/alchemy/service.ts` (`runRelationalMesaExploration`, additive),
+`src/domain/alchemy/lineage.ts` (`immediateParents`, additive),
+`src/domain/alchemy/lineage-registry.ts` (`AlchemicalIdentityRegistry`,
+`ancestryMarkers`, additive), `src/web/lab.ts` (relational methods, Promote
+identity-assignment hook), `web/index.html` (RELACIÓN section), `web/app.js`
+(relation-mode/Guest-picker wiring, ancestry-marker rendering).
