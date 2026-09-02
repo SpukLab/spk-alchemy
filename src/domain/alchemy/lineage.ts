@@ -84,3 +84,17 @@ export async function lineageColorForMaterial(
   const { rootId, multiRoot } = await resolveLineageRoot(materialId, queries);
   return multiRoot ? MULTI_ROOT_COLOR : lineageColorForRoot(rootId);
 }
+
+/**
+ * Immediate parents only (depth 1) — never the full ancestral graph. This is
+ * the "ancestry markers" primitive for relational (Source+Guest) Materials:
+ * a two-Material result shows two small dots, not every historic root.
+ * `maxDepth: 1` bounds the traversal itself, not just the filter — no extra
+ * cost from walking generations the caller does not want.
+ */
+export async function immediateParents(
+  materialId: string, queries: AlchemyQueries,
+): Promise<string[]> {
+  const result = await queries.ancestors(materialId, 1);
+  return result.nodes.filter((n) => n.depth === 1).map((n) => n.id).sort();
+}

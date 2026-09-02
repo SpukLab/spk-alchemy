@@ -1,4 +1,5 @@
-import { LINEAGE_PALETTE, MULTI_ROOT_COLOR, resolveLineageRoot, paletteIndexForRoot } from './lineage.ts';
+import { LINEAGE_PALETTE, MULTI_ROOT_COLOR, resolveLineageRoot, paletteIndexForRoot, immediateParents }
+  from './lineage.ts';
 import type { AlchemyQueries } from '../../query/queries.ts';
 
 /**
@@ -83,4 +84,68 @@ export class LineageColorRegistry {
 
   /** Test/diagnostic access. Never used to drive rendering. */
   async assignments(): Promise<Record<string, number>> { return { ...(await this.#load()) }; }
+}
+
+/**
+ * Alchemical identity color registry — same stable-allocation mechanics as
+ * LineageColorRegistry (never reassigns, spreads via hash-seeded search,
+ * deterministic exhaustion fallback), but keyed by a PROMOTED multi-parent
+ * Material's own id, not by a root ancestor. A distinct instance/store
+ * namespace, so identity assignments can never disturb root-lineage
+ * assignments or vice versa — the two registries are two separate id spaces
+ * sharing the same palette and the same allocation algorithm, nothing more.
+ *
+ * V1 color rule, per the brief: a relational Preview or a merely-retained
+ * relational Material shows ancestry markers only (see `ancestryMarkers`
+ * below). Only Promote is the UI-level trigger that assigns this Material
+ * its own stable identity color — Promote already exists as a meaningful
+ * artistic event; this registry does not change what Promote means
+ * canonically, it only reacts to it in the browser.
+ */
+export class AlchemicalIdentityRegistry {
+  readonly #inner: LineageColorRegistry;
+  constructor(store: LineageRegistryStore, paletteSize: number = LINEAGE_PALETTE.length) {
+    this.#inner = new LineageColorRegistry(store, paletteSize);
+  }
+
+  /** Assigns (or returns the existing) stable identity color for this Material's own id. */
+  async colorForIdentity(materialId: string): Promise<string> {
+    const slot = await this.#inner.slotForRoot(materialId);
+    return LINEAGE_PALETTE[slot] ?? MULTI_ROOT_COLOR;
+  }
+
+  /** Whether this Material has ever been assigned its own identity color. */
+  async hasIdentity(materialId: string): Promise<boolean> {
+    return materialId in (await this.#inner.assignments());
+  }
+
+  /** Test/diagnostic access. Never used to drive rendering. */
+  async assignments(): Promise<Record<string, number>> { return this.#inner.assignments(); }
+}
+
+export interface AncestryMarker { materialId: string; color: string }
+
+/**
+ * Immediate-ancestry markers for the material card: one color per immediate
+ * parent (depth 1 only, never the full historical chain). If a parent
+ * already has its own alchemical identity color (it was itself promoted as
+ * a multi-parent relational result), that identity color is used in place
+ * of its root-lineage color — this is what keeps a third-generation card
+ * showing only its two immediate parents' *current* markers, per the
+ * multi-generation example in the brief, rather than recursing into
+ * grandparent colors.
+ */
+export async function ancestryMarkers(
+  materialId: string, queries: AlchemyQueries,
+  lineageRegistry: LineageColorRegistry, identityRegistry: AlchemicalIdentityRegistry,
+): Promise<AncestryMarker[]> {
+  const parentIds = await immediateParents(materialId, queries);
+  const markers: AncestryMarker[] = [];
+  for (const parentId of parentIds) {
+    const color = (await identityRegistry.hasIdentity(parentId))
+      ? await identityRegistry.colorForIdentity(parentId)
+      : await lineageRegistry.colorForMaterial(parentId, queries);
+    markers.push({ materialId: parentId, color });
+  }
+  return markers;
 }

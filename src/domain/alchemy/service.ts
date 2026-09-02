@@ -28,6 +28,11 @@ import {
   runMesaExploration as runMesaExplorationEngine, validateMesaState, serializeMesaState,
   MESA_CONFIGURATION_ID, MESA_VERSION, MESA_SCHEMA_VERSION,
 } from './mesa.ts';
+import type { RelationalMesaContext, RelationMode } from './mesa-relational.ts';
+import {
+  runRelationalMesaExploration as runRelationalMesaExplorationEngine, validateRelationalContext,
+  RELATIONAL_CONFIGURATION_ID, RELATIONAL_VERSION,
+} from './mesa-relational.ts';
 
 const SCHEMA_VERSION = 1;
 
@@ -68,6 +73,19 @@ export interface MesaPreviewSet {
 
 export interface RetainResult { material: Entity; transition: Transition; created: boolean }
 export interface LifecycleResult { material: Entity; transition: Transition; changed: boolean }
+
+export interface RelationalMesaPreviewVariation extends MesaPreviewVariation {
+  relationMode: RelationMode; guestContributed: boolean;
+}
+export interface RelationalMesaPreviewSet {
+  kind: 'relational-mesa-preview-set';
+  researchIntentId: string; sourceMaterialIds: readonly string[];
+  configurationId: string; configurationVersion: string; implementationVersion: string;
+  relationalConfigurationId: string; relationalConfigurationVersion: string;
+  baseSeed: number; variations: RelationalMesaPreviewVariation[];
+  executionAgentId: string; createdAt: number; mesaState: MesaState;
+  relationalContext: RelationalMesaContext;
+}
 
 export class AlchemyService {
   readonly #records: RecordStore;
@@ -602,6 +620,116 @@ export class AlchemyService {
       configurationVersion: MESA_VERSION, implementationVersion: MESA_VERSION,
       baseSeed: input.baseSeed, variations, executionAgentId: agent.id,
       createdAt: this.#clock(), mesaState,
+    };
+  }
+
+  // ---- Mesa relational V1 (mesa-relational-v1) -----------------------------
+
+  /**
+   * Source + Guest relational exploration, layered on top of the unmodified
+   * Mesa V1.1 pipeline (see mesa-relational.ts). No architectural change was
+   * needed to support a second parent Material: `createExperiment` already
+   * accepts `inputMaterialIds: readonly string[]`, and `retain()` already
+   * loops over `preview.sourceMaterialIds` to create one `derived_from`
+   * Relationship per parent -- both were built multi-input-capable from the
+   * start. This method only supplies a second id when a Guest is present.
+   *
+   * Guest enters raw/canonical: Source Conditioning applies to Source only,
+   * exactly as documented in mesa-relational.ts and IMPLEMENTATION_FINDINGS.
+   */
+  async runRelationalMesaExploration(input: {
+    sourceMaterialId: string; guestMaterialId?: string; researchIntentId: string;
+    mesaState: MesaState; baseSeed: number; agentId: string;
+    relationMode: RelationMode; guestInfluence: number;
+    conditioning?: InputConditioningState;
+  }): Promise<RelationalMesaPreviewSet> {
+    const agent = await this.#requireAgent(input.agentId);
+    const source = await this.#requireEntity(input.sourceMaterialId);
+    const intent = await this.#records.get(COLLECTIONS.entities, input.researchIntentId);
+    if (!intent || (intent as unknown as Entity).type !== TYPE_RESEARCH_INTENT) {
+      throw new DomainRuleError(
+        `Relational Mesa exploration references a Research Intent that does not exist: ${input.researchIntentId}`);
+    }
+
+    const sourceHash = String(source.attributes.contentHash);
+    const sourceStored = await this.#content.get(sourceHash);
+    if (!sourceStored) throw new IntegrityError(`missing content ${sourceHash} for material ${source.id}`);
+    const conditioningState = input.conditioning ?? DEFAULT_CONDITIONING_STATE;
+    const sourceBytes = applyConditioning(sourceStored, conditioningState);
+
+    let guest: Entity | null = null;
+    let guestBytes: Uint8Array | null = null;
+    if (input.guestMaterialId) {
+      guest = await this.#requireEntity(input.guestMaterialId);
+      const guestHash = String(guest.attributes.contentHash);
+      const stored = await this.#content.get(guestHash);
+      if (!stored) throw new IntegrityError(`missing content ${guestHash} for material ${guest.id}`);
+      guestBytes = stored; // raw/canonical -- no Source Conditioning applied to Guest
+    }
+
+    const relationalCtx = validateRelationalContext({
+      sourceMaterialId: input.sourceMaterialId, guestMaterialId: input.guestMaterialId,
+      relationMode: input.relationMode, guestInfluence: input.guestInfluence,
+    });
+    const mesaState = validateMesaState(input.mesaState);
+
+    const relationalConfigStub = {
+      id: MESA_CONFIGURATION_ID, version: MESA_VERSION, schemaVersion: MESA_SCHEMA_VERSION,
+      implementationVersion: MESA_VERSION,
+      operations: [{ operation: 'relational-mesa-exploration',
+        description: 'Mesa relational Source+Guest exploration' }],
+    } as unknown as ResearchConfiguration;
+    const experiment = await this.createExperiment({
+      researchIntentId: input.researchIntentId,
+      inputMaterialIds: guest ? [source.id, guest.id] : [source.id],
+      operation: 'exploration' as OperationName,
+      parameters: { mesaState, relationalCtx } as unknown as OperationParameters,
+      agentId: input.agentId, configuration: relationalConfigStub, baseSeed: input.baseSeed,
+    });
+
+    const observations = runRelationalMesaExplorationEngine(
+      sourceBytes, guestBytes, mesaState, input.baseSeed, relationalCtx);
+
+    const sourceMaterialIds = guest ? [source.id, guest.id] : [source.id];
+    const variations: RelationalMesaPreviewVariation[] = observations.map((obs, index) => {
+      const outputHash = contentHash(obs.bytes);
+      const preview: Preview = {
+        kind: 'preview',
+        stagingRef: idempotencyKey('preview', experiment.id, obs.strategyId, String(obs.seed), outputHash),
+        experimentId: experiment.id, sourceMaterialIds,
+        operation: obs.strategyId, implementationVersion: MESA_VERSION,
+        bytes: obs.bytes, contentHash: outputHash,
+        parameters: {
+          mesaState, mesaStateSerialized: serializeMesaState(mesaState),
+          territory: obs.territory, strategyId: obs.strategyId, anchor: obs.anchor,
+          conditioningId: CONDITIONING_CONFIGURATION_ID, conditioningVersion: CONDITIONING_VERSION,
+          conditioningState, conditioningResolved: resolveConditioningParameters(conditioningState),
+          relational: {
+            configurationId: RELATIONAL_CONFIGURATION_ID, configurationVersion: RELATIONAL_VERSION,
+            sourceMaterialId: source.id, guestMaterialId: guest?.id ?? null,
+            relationMode: obs.relationMode, guestInfluence: relationalCtx.guestInfluence,
+            guestContributed: obs.guestContributed,
+          },
+        },
+        exploration: {
+          configurationId: MESA_CONFIGURATION_ID, configurationVersion: MESA_VERSION,
+          variationIndex: index, seed: obs.seed,
+        },
+      };
+      return {
+        index, territory: obs.territory, strategyId: obs.strategyId, anchor: obs.anchor, seed: obs.seed,
+        preview, relationMode: obs.relationMode, guestContributed: obs.guestContributed,
+      };
+    });
+
+    return {
+      kind: 'relational-mesa-preview-set', researchIntentId: input.researchIntentId,
+      sourceMaterialIds, configurationId: MESA_CONFIGURATION_ID, configurationVersion: MESA_VERSION,
+      implementationVersion: MESA_VERSION,
+      relationalConfigurationId: RELATIONAL_CONFIGURATION_ID,
+      relationalConfigurationVersion: RELATIONAL_VERSION,
+      baseSeed: input.baseSeed, variations, executionAgentId: agent.id,
+      createdAt: this.#clock(), mesaState, relationalContext: relationalCtx,
     };
   }
 
