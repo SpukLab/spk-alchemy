@@ -19,14 +19,16 @@ import type { Entity } from '../core/primitives.ts';
 import { FamilyService } from '../domain/alchemy/family-service.ts';
 import type { DnaPackManifest, FamilyMember } from '../domain/alchemy/family-service.ts';
 import { buildDnaPackZip, packDirectoryName } from '../domain/alchemy/dna-pack.ts';
-import { LineageColorRegistry } from '../domain/alchemy/lineage-registry.ts';
-import type { LineageRegistryStore } from '../domain/alchemy/lineage-registry.ts';
+import { LineageColorRegistry, AlchemicalIdentityRegistry, ancestryMarkers } from '../domain/alchemy/lineage-registry.ts';
+import type { LineageRegistryStore, AncestryMarker } from '../domain/alchemy/lineage-registry.ts';
+import { immediateParents } from '../domain/alchemy/lineage.ts';
 import { DEFAULT_MESA_STATE } from '../domain/alchemy/mesa.ts';
 import { strategyLabel, territoryLabel } from '../domain/alchemy/mesa-labels.ts';
 import { DEFAULT_CONDITIONING_STATE } from '../domain/alchemy/conditioning.ts';
 import type { InputConditioningState } from '../domain/alchemy/conditioning.ts';
 import type { MesaState } from '../domain/alchemy/mesa.ts';
-import type { MesaPreviewSet } from '../domain/alchemy/service.ts';
+import type { MesaPreviewSet, RelationalMesaPreviewSet } from '../domain/alchemy/service.ts';
+import type { RelationMode } from '../domain/alchemy/mesa-relational.ts';
 
 /**
  * Browser composition root.
@@ -59,6 +61,19 @@ export interface WebLab {
   /** Display labels, mapped from the strategy identifiers in mesa.ts. */
   strategyLabel(strategyId: string): string;
   territoryLabel(territory: 'medium' | 'unexpected'): string;
+  // Multi-material Mesa (Source + Guest)
+  readonly defaultGuestInfluence: number;
+  /** Promoted candidates for Guest selection, excluding the current Source. */
+  guestCandidates(excludeMaterialId: string): Promise<Entity[]>;
+  exploreRelationalMesa(sourceMaterialId: string, guestMaterialId: string | undefined,
+    question: string, state: MesaState, relationMode: RelationMode, guestInfluence: number,
+    conditioning?: InputConditioningState): Promise<RelationalMesaPreviewSet>;
+  /** Immediate-parent ancestry markers (never the full genealogy) for a material card. */
+  ancestryMarkersFor(materialId: string): Promise<AncestryMarker[]>;
+  /** Whether this material has >1 immediate parent -- a relational result. */
+  isRelationalMaterial(materialId: string): Promise<boolean>;
+  /** This material's own stable identity color, if Promote has ever assigned one. */
+  identityColorIfAny(materialId: string): Promise<string | null>;
   /** Microphone capture: bytes always come from the CaptureFormatPolicy's chosen encoder. */
   ingest(input: ArrayBuffer, filename: string): Promise<Entity>;
   /** File import: bytes are of unknown, unverified origin. Decode is the only gate. */
@@ -85,18 +100,26 @@ const DEFAULT_INTENT = 'Exploración libre';
  * RecordStore is the point: canonical persistence must not carry UI state.
  */
 const LINEAGE_REGISTRY_KEY = 'alchemy.lineage-palette.v1';
+/**
+ * Same rationale as LINEAGE_REGISTRY_KEY, a distinct key: identity
+ * assignments (promoted multi-parent Materials) must never share storage
+ * with root-lineage assignments, or the two id spaces could collide.
+ */
+const IDENTITY_REGISTRY_KEY = 'alchemy.identity-palette.v1';
 
 class LocalStorageLineageStore implements LineageRegistryStore {
+  readonly #key: string;
+  constructor(key: string = LINEAGE_REGISTRY_KEY) { this.#key = key; }
   async read(): Promise<Record<string, number>> {
     try {
-      const raw = globalThis.localStorage?.getItem(LINEAGE_REGISTRY_KEY);
+      const raw = globalThis.localStorage?.getItem(this.#key);
       return raw ? (JSON.parse(raw) as Record<string, number>) : {};
     } catch {
       return {}; // a corrupt or unavailable store degrades to fresh assignment
     }
   }
   async write(assignments: Record<string, number>): Promise<void> {
-    try { globalThis.localStorage?.setItem(LINEAGE_REGISTRY_KEY, JSON.stringify(assignments)); }
+    try { globalThis.localStorage?.setItem(this.#key, JSON.stringify(assignments)); }
     catch { /* private mode or quota: colors simply are not remembered */ }
   }
 }
@@ -112,7 +135,8 @@ export async function openWebLab(): Promise<WebLab> {
   const service = new AlchemyService(records, content, registry);
   const queries = new AlchemyQueries(records, content);
   const families = new FamilyService(records, content, registry);
-  const lineageRegistry = new LineageColorRegistry(new LocalStorageLineageStore());
+  const lineageRegistry = new LineageColorRegistry(new LocalStorageLineageStore(LINEAGE_REGISTRY_KEY));
+  const identityRegistry = new AlchemicalIdentityRegistry(new LocalStorageLineageStore(IDENTITY_REGISTRY_KEY));
 
   const artist = await service.registerAgent({ kind: 'human', name: 'artist', version: '1' });
   const analyzer = await service.registerAgent({
@@ -185,8 +209,39 @@ export async function openWebLab(): Promise<WebLab> {
         mesaState: state, baseSeed: Date.now() >>> 0, agentId: artist.id, conditioning });
     },
 
+    defaultGuestInfluence: 50,
+    async guestCandidates(excludeMaterialId) {
+      const page = await queries.promotedMaterials(undefined, 100);
+      return [...page.items].reverse().filter((m) => m.id !== excludeMaterialId);
+    },
+    async exploreRelationalMesa(sourceMaterialId, guestMaterialId, question, state,
+                                relationMode, guestInfluence, conditioning) {
+      return service.runRelationalMesaExploration({
+        sourceMaterialId, guestMaterialId, researchIntentId: await intentFor(question),
+        mesaState: state, baseSeed: Date.now() >>> 0, agentId: artist.id,
+        relationMode, guestInfluence, conditioning });
+    },
+    async ancestryMarkersFor(materialId) {
+      return ancestryMarkers(materialId, queries, lineageRegistry, identityRegistry);
+    },
+    async isRelationalMaterial(materialId) {
+      return (await immediateParents(materialId, queries)).length > 1;
+    },
+    async identityColorIfAny(materialId) {
+      return (await identityRegistry.hasIdentity(materialId))
+        ? identityRegistry.colorForIdentity(materialId) : null;
+    },
+
     async retain(preview) { return (await service.retain(preview, artist.id)).material; },
-    async promote(materialId) { await service.promote(materialId, artist.id); },
+    async promote(materialId) {
+      await service.promote(materialId, artist.id);
+      // UI-level identity assignment, not a canonical effect: Promote is the
+      // moment the artist recognizes a relational (multi-parent) result as
+      // its own usable Material. Single-parent Materials are untouched --
+      // this only fires for immediateParents().length > 1.
+      const parents = await immediateParents(materialId, queries);
+      if (parents.length > 1) await identityRegistry.colorForIdentity(materialId);
+    },
     async reject(materialId) { await service.reject(materialId, artist.id); },
 
     async materials(state) {

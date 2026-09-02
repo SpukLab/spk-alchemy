@@ -19,6 +19,7 @@ const state = {
   openFamilyId: null, playingMaterialId: null, playbackAudio: null,
   pickerSelected: new Set(),
   exploreMode: 'quick', mesaObservations: [],
+  relationMode: 'solo', guest: null, guestPickerOpen: false,
 };
 
 /**
@@ -163,6 +164,8 @@ function selectSource(material) {
     <div class="meta">${describe(material)}</div>`;
   $('explore').disabled = false;
   $('mesa-explore').disabled = false;
+  // Guest cannot equal Source: a new Source invalidates a same-id Guest.
+  if (state.guest?.id === material.id) { state.guest = null; renderGuestDisplay(); }
 }
 
 
@@ -280,7 +283,12 @@ async function runMesaExplorationUI() {
   try {
     const question = $('mesa-intent').value.trim() || 'Exploración libre';
     const mesaState = readMesaState();
-    const set = await state.lab.exploreMesa(state.source.id, question, mesaState, readConditioningState());
+    const conditioning = readConditioningState();
+    const set = state.relationMode === 'solo' || !state.guest
+      ? await state.lab.exploreMesa(state.source.id, question, mesaState, conditioning)
+      : await state.lab.exploreRelationalMesa(
+          state.source.id, state.guest.id, question, mesaState,
+          state.relationMode, Number($('guest-influence').value), conditioning);
     state.mesaObservations = set.variations;
     await renderMesaResults();
     toast(`${set.variations.length} observaciones`);
@@ -292,13 +300,80 @@ async function runMesaExplorationUI() {
   }
 }
 
+// ---- Mesa relational (Source + Guest) --------------------------------------
+
+function setRelationMode(mode) {
+  state.relationMode = mode;
+  for (const btn of document.querySelectorAll('#relation-mode-tabs [data-relation]')) {
+    btn.setAttribute('aria-selected', String(btn.dataset.relation === mode));
+  }
+  $('guest-section').hidden = mode === 'solo';
+  if (mode === 'solo') { $('guest-picker').hidden = true; state.guestPickerOpen = false; }
+}
+
+function selectGuest(material) {
+  state.guest = material;
+  state.guestPickerOpen = false;
+  $('guest-picker').hidden = true;
+  renderGuestDisplay();
+}
+
+async function renderGuestDisplay() {
+  const host = $('guest-display');
+  if (!state.guest) { host.textContent = 'Ningún invitado seleccionado'; return; }
+  const color = await safeLineageColor(state.guest.id);
+  host.innerHTML = `<span class="lineage-dot" style="background:${color}" aria-hidden="true"></span>`
+    + `${escapeHtml(state.guest.attributes.filename || 'Material')}`;
+}
+
+async function toggleGuestPicker() {
+  state.guestPickerOpen = !state.guestPickerOpen;
+  $('guest-picker').hidden = !state.guestPickerOpen;
+  if (state.guestPickerOpen) await renderGuestPicker();
+}
+
+/**
+ * Guest candidates: promoted Materials only, excluding the current Source
+ * (Guest cannot equal Source). Play and select are separate touch targets,
+ * same lesson already applied to Family selection: a button for playback, a
+ * sibling span for selection, so one tap can never fire both.
+ */
+async function renderGuestPicker() {
+  const host = $('guest-picker');
+  if (!state.source) { host.innerHTML = `<div class="empty">Elegí primero una Fuente</div>`; return; }
+  const candidates = await state.lab.guestCandidates(state.source.id);
+  if (candidates.length === 0) {
+    host.innerHTML = `<div class="empty">No hay Materiales promovidos disponibles como invitado</div>`;
+    return;
+  }
+  const colors = await Promise.all(candidates.map((m) => safeLineageColor(m.id)));
+  host.innerHTML = '';
+  candidates.forEach((m, i) => {
+    const playing = state.playingMaterialId === m.id;
+    const row = document.createElement('div');
+    row.className = 'pick-row';
+    row.innerHTML = `
+      <button class="play-btn" data-guest-play="${m.id}" aria-label="Reproducir">${playing ? '⏸' : '▶'}</button>
+      <span style="flex:1;min-width:0" data-guest-select="${m.id}">
+        <h3 style="margin:0"><span class="lineage-dot" style="background:${colors[i]}" aria-hidden="true"></span>${escapeHtml(m.attributes.filename || 'Material')}</h3>
+        <div class="meta">${describe(m)}</div>
+      </span>`;
+    host.appendChild(row);
+  });
+}
+
 async function renderMesaResults() {
   const host = $('mesa-results');
   host.innerHTML = '';
   if (state.mesaObservations.length === 0) return;
-  // One lineage color for the whole set: every observation descends from the
-  // same source, so they all share its color by definition.
-  const color = state.source ? await safeLineageColor(state.source.id) : '#8b8b96';
+  // Ancestry markers per observation, not one color for the whole set: a
+  // relational (Source+Guest) observation's `sourceMaterialIds` has two
+  // entries and shows two dots; SOLO still has exactly one id, one dot,
+  // unchanged from before.
+  const dotsFor = async (v) => {
+    const colors = await Promise.all(v.preview.sourceMaterialIds.map(safeLineageColor));
+    return colors.map((c) => `<span class="lineage-dot" style="background:${c}" aria-hidden="true"></span>`).join('');
+  };
 
   for (const territory of ['medium', 'unexpected']) {
     // Grouping comes from each observation's actual runtime territory
@@ -312,6 +387,7 @@ async function renderMesaResults() {
     group.innerHTML = `<h3>${escapeHtml(state.lab.territoryLabel(territory))}</h3>`;
     for (const { v, i } of items) {
       const playing = state.playingMaterialId === `mesa:${i}`;
+      const dots = await dotsFor(v);
       const card = document.createElement('div');
       card.className = 'obs-card';
       // The label is the strategy's real identity, mapped from its id --
@@ -319,7 +395,7 @@ async function renderMesaResults() {
       card.innerHTML = `
         <button class="play-btn" data-mesa-play="${i}" aria-label="Reproducir">${playing ? '⏸' : '▶'}</button>
         <div class="obs-info">
-          <h4><span class="lineage-dot" style="background:${color}" aria-hidden="true"></span>${escapeHtml(state.lab.strategyLabel(v.strategyId))}</h4>
+          <h4>${dots}${escapeHtml(state.lab.strategyLabel(v.strategyId))}</h4>
           <div class="meta">${(v.preview.bytes.byteLength / 1024).toFixed(0)} KB</div>
         </div>
         <div class="obs-acts">
@@ -409,6 +485,15 @@ async function renderMaterials() {
   // Fetch lineage colors in parallel: each is a small bounded ancestors query,
   // never a canonical write, never dependent on lifecycle or Family state.
   const colors = await Promise.all(items.map((m) => safeLineageColor(m.id)));
+  // Own identity color (Promote-assigned, multi-parent only) and immediate
+  // ancestry markers, in parallel alongside the above -- both degrade to
+  // "nothing extra to show" rather than failing the whole card.
+  const identities = await Promise.all(items.map(async (m) => {
+    try { return await state.lab.identityColorIfAny(m.id); } catch { return null; }
+  }));
+  const ancestries = await Promise.all(items.map(async (m) => {
+    try { return await state.lab.ancestryMarkersFor(m.id); } catch { return []; }
+  }));
 
   host.innerHTML = '';
   const curatingHere = state.curating && state.tab === 'promoted';
@@ -419,7 +504,18 @@ async function renderMaterials() {
     // Play is always its own button, outside any <label>, so tapping it can
     // never also toggle the selection checkbox in curating mode.
     const playButton = `<button class="play-btn" data-play="${m.id}" aria-label="Reproducir">${playing ? '⏸' : '▶'}</button>`;
-    const dot = `<span class="lineage-dot" style="background:${colors[i]}" aria-hidden="true"></span>`;
+    // Own identity color if this Material was ever Promoted as a multi-parent
+    // relational result; otherwise the ordinary single-lineage dot, exactly
+    // as before -- single-lineage Materials never see a behavior change here.
+    const dot = `<span class="lineage-dot" style="background:${identities[i] ?? colors[i]}" aria-hidden="true"></span>`;
+    // Immediate-parent ancestry markers: only rendered when there is more
+    // than one immediate parent (a relational result). Never the full
+    // historical genealogy, and never shown for ordinary single-root Materials.
+    const ancestry = ancestries[i] ?? [];
+    const ancestryRow = ancestry.length > 1
+      ? `<div class="ancestry-markers">${ancestry.map((a) =>
+          `<span class="lineage-dot" style="background:${a.color}" aria-hidden="true"></span>`).join('')}</div>`
+      : '';
 
     if (curatingHere) {
       const checked = state.selected.has(m.id) ? 'checked' : '';
@@ -431,6 +527,7 @@ async function renderMaterials() {
             <span style="flex:1">
               <h3 style="margin:0">${dot}${escapeHtml(m.attributes.filename || 'Material')}</h3>
               <div class="meta">${describe(m)}</div>
+              ${ancestryRow}
             </span>
           </label>
         </div>`;
@@ -450,6 +547,7 @@ async function renderMaterials() {
         <span style="flex:1;min-width:0">
           <h3>${dot}${escapeHtml(m.attributes.filename || 'Material')}</h3>
           <div class="meta">${describe(m)}</div>
+          ${ancestryRow}
         </span>
       </div>
       <div class="acts">${actions}</div>`;
@@ -577,6 +675,9 @@ function updatePlayButtons() {
   }
   for (const btn of document.querySelectorAll('[data-mesa-play]')) {
     btn.textContent = state.playingMaterialId === `mesa:${btn.dataset.mesaPlay}` ? '⏸' : '▶';
+  }
+  for (const btn of document.querySelectorAll('[data-guest-play]')) {
+    btn.textContent = state.playingMaterialId === btn.dataset.guestPlay ? '⏸' : '▶';
   }
 }
 
@@ -826,6 +927,20 @@ function wire() {
     tab.onclick = () => setExploreMode(tab.dataset.mode);
   }
 
+  for (const btn of document.querySelectorAll('#relation-mode-tabs [data-relation]')) {
+    btn.onclick = () => setRelationMode(btn.dataset.relation);
+  }
+  $('guest-pick-btn').onclick = toggleGuestPicker;
+  $('guest-picker').addEventListener('click', async (e) => {
+    const playBtn = e.target.closest('[data-guest-play]');
+    if (playBtn) { await togglePlayMaterial(playBtn.dataset.guestPlay); return; }
+    const selectTarget = e.target.closest('[data-guest-select]');
+    if (selectTarget) {
+      const material = await state.lab.material(selectTarget.dataset.guestSelect);
+      if (material) selectGuest(material);
+    }
+  });
+
   $('mesa-results').onclick = async (e) => {
     const d = e.target.dataset || {};
     if (d.mesaPlay !== undefined) playMesaObservation(Number(d.mesaPlay));
@@ -977,6 +1092,7 @@ async function boot() {
     wire();
     initMesaSliders();
     initConditioningControls();
+    $('guest-influence').value = String(state.lab.defaultGuestInfluence);
 
     // Capture may be impossible on this device or over http://. Explain it up
     // front rather than letting the record button fail silently.

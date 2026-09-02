@@ -67,6 +67,8 @@ button[disabled]{opacity:.35}
 .tabs{display:flex;gap:6px;margin-bottom:12px}
 .tabs button{flex:1;min-height:40px;padding:8px;font-size:13px;border-radius:10px}
 .tabs button[aria-selected=true]{background:#1d1a10;border-color:#3d3417;color:var(--accent)}
+.relation-modes{flex-wrap:wrap}
+.relation-modes button{flex:1 1 30%;min-width:0}
 .empty{color:var(--dim);font-size:13px;padding:14px 0;text-align:center}
 .toast{
   position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom));
@@ -101,6 +103,8 @@ audio{width:100%;margin-top:8px;filter:invert(.9) hue-rotate(180deg)}
 .fam-card .info .meta{color:var(--dim);font-size:12px}
 .lineage-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;
   vertical-align:middle;flex:none}
+.ancestry-markers{margin-top:2px}
+.ancestry-markers .lineage-dot{width:7px;height:7px;margin-right:4px}
 .pick-row{display:flex;align-items:center;gap:10px}
 .pick-row .pick{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
 .pick-row .pick input{width:22px;height:22px;flex:none}
@@ -276,6 +280,26 @@ audio{width:100%;margin-top:8px;filter:invert(.9) hue-rotate(180deg)}
         <input type="range" id="mesa-acentos-seleccion" min="0" max="100" value="0">
         <div class="mesa-slider-ends"><span>ESTABLE</span><span>CAMBIANTE</span></div>
       </label>
+      </div>
+      <div class="mesa-tool" id="relation-tool">
+        <h3>RELACIÓN</h3>
+        <div class="tabs relation-modes" id="relation-mode-tabs" role="tablist">
+          <button type="button" data-relation="solo" role="tab" aria-selected="true">Solo</button>
+          <button type="button" data-relation="inyectar" role="tab" aria-selected="false">Inyectar</button>
+          <button type="button" data-relation="acentuar-con" role="tab" aria-selected="false">Acentuar con</button>
+          <button type="button" data-relation="contagiar" role="tab" aria-selected="false">Contagiar</button>
+          <button type="button" data-relation="cruzar" role="tab" aria-selected="false">Cruzar</button>
+        </div>
+        <div id="guest-section" hidden>
+          <div id="guest-display" class="meta">Ningún invitado seleccionado</div>
+          <button type="button" id="guest-pick-btn" style="width:100%;margin-top:8px">Elegir invitado</button>
+          <div id="guest-picker" hidden style="margin-top:8px"></div>
+          <label class="mesa-slider" style="margin-top:12px">
+            <div class="mesa-slider-label">Influencia</div>
+            <input type="range" id="guest-influence" min="0" max="100" value="0">
+            <div class="mesa-slider-ends"><span>LEVE</span><span>FUERTE</span></div>
+          </label>
+        </div>
       </div>
 
       <button class="big explore" id="mesa-explore" disabled>Explorar</button>
