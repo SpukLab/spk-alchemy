@@ -53,7 +53,7 @@ export const historicalExperiments: readonly HistoricalExperiment[] = [
   { code: 'EXP-2026-012', id: '97e11fec-4ea5-4d60-a916-2a3253cac32e', title: 'Constitutional delta map', lifecycle: OBS_LIFECYCLE.closed, verdict: 'DERIVABLE != CONSTITUTIONALLY DISPENSABLE; targeted direct verification required.', completeness: 'partial' },
   { code: 'EXP-2026-013', id: '089a7356-3048-4e25-8192-945ae8082a54', title: 'Direct constitutional verification of FKC-000', lifecycle: OBS_LIFECYCLE.closed, verdict: 'TARGETED CLARIFICATION; primitive ontology frozen; inference question isolated for further test.', completeness: 'substantial' },
   { code: 'EXP-2026-014', id: 'e5febaa8-cdfb-465b-a9e8-816074aaa9c4', title: 'Inference elimination test', lifecycle: OBS_LIFECYCLE.closed, verdict: 'NO CHANGE. Inferential validity is diagnosable without a named constitutional function.', completeness: 'substantial' },
-  { code: 'EXP-2026-015', id: '52fba64f-73f7-48bc-aaff-f837207471a0', title: 'Operational validation of authority, permission and delegation', lifecycle: OBS_LIFECYCLE.active, verdict: 'ACTIVE — awaiting independent model evidence and synthesis.', completeness: 'substantial' },
+  { code: 'EXP-2026-015', id: '52fba64f-73f7-48bc-aaff-f837207471a0', title: 'Operational validation of authority, permission and delegation', lifecycle: OBS_LIFECYCLE.closed, verdict: 'NO CHANGE. Governance grammar represents all tested cases; delegation/revocation/Principal mechanics remain open; responsibility distribution added as open-research candidate.', completeness: 'substantial' },
 ] as const;
 
 export const observatoryExperimentEntities: Entity[] = historicalExperiments.map((exp) => ({
@@ -108,53 +108,37 @@ export const observatoryIntentRelationships: Relationship[] = historicalExperime
   createdAt: CREATED_AT + index,
 }));
 
-export const observatorySynthesisKnowledge: Knowledge[] = historicalExperiments
-  .filter((exp) => exp.code !== 'EXP-2026-015')
-  .map((exp, index) => ({
-    id: KNOWLEDGE_IDS[index]!,
-    subject: exp.id,
-    subjectKind: 'entity',
-    kind: OBS_KNOWLEDGE_KIND.experimentSynthesis,
-    stage: 'validated',
-    payload: {
-      verdict: exp.verdict,
-      evidenceCompleteness: exp.completeness,
-      reconstructionSource: 'historical-synthesis',
-      constitutionalBaseline: FKC_BASELINE,
-    },
-    agentId: observatoryRecoveryAgent.id,
-    agentVersion: OBSERVATORY_CHECKPOINT_VERSION,
-    evidence: [],
-    confidence: null,
-    schemaVersion: 1,
-    createdAt: CREATED_AT + index,
-    supersedes: null,
-  }));
-
-export const activeResearchState: Knowledge = {
-  id: KNOWLEDGE_IDS[8]!,
-  subject: '52fba64f-73f7-48bc-aaff-f837207471a0',
+export const observatorySynthesisKnowledge: Knowledge[] = historicalExperiments.map((exp, index) => ({
+  id: KNOWLEDGE_IDS[index]!,
+  subject: exp.id,
   subjectKind: 'entity',
-  kind: OBS_KNOWLEDGE_KIND.researchState,
-  stage: 'observation',
+  kind: OBS_KNOWLEDGE_KIND.experimentSynthesis,
+  stage: 'validated',
   payload: {
-    state: 'ACTIVE',
-    note: 'Independent model responses pending durable ingestion and synthesis.',
+    verdict: exp.verdict,
+    evidenceCompleteness: exp.completeness,
+    reconstructionSource: exp.code === 'EXP-2026-015' ? 'independent-model-synthesis' : 'historical-synthesis',
     constitutionalBaseline: FKC_BASELINE,
+    ...(exp.code === 'EXP-2026-015' ? {
+      evidenceModels: ['Grok', 'DeepSeek', 'Claude', 'Gemini'],
+      synthesisDocument: 'docs/observatory/EXP-2026-015-SYNTHESIS.md',
+      constitutionalImpact: 'NO_CHANGE',
+      openResearchCandidate: 'responsibility transfer/sharing/retention across delegation chains',
+    } : {}),
   },
   agentId: observatoryRecoveryAgent.id,
   agentVersion: OBSERVATORY_CHECKPOINT_VERSION,
   evidence: [],
   confidence: null,
   schemaVersion: 1,
-  createdAt: CREATED_AT,
+  createdAt: CREATED_AT + index,
   supersedes: null,
-};
+}));
 
 export const observatoryCheckpointV1 = {
   agent: observatoryRecoveryAgent,
   intent: observatoryResearchIntent,
   experiments: observatoryExperimentEntities,
   relationships: observatoryIntentRelationships,
-  knowledge: [...observatorySynthesisKnowledge, activeResearchState],
+  knowledge: observatorySynthesisKnowledge,
 } as const;
