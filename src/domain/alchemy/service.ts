@@ -208,6 +208,12 @@ export class AlchemyService {
     payload: Record<string, Json>; agentId: string;
     confidence?: number; supersedes?: string; evidence?: string[];
   }): Promise<Knowledge> {
+    // Preserve the old API's domain validation exactly for legacy callers.
+    const legacyDef = this.#registry.knowledgeKind(input.kind);
+    if (!legacyDef.allowedStages.includes(input.stage)) {
+      throw new DomainRuleError(
+        `stage ${input.stage} not allowed for knowledge kind ${input.kind}`);
+    }
     return this.assertEpistemicRecord({
       subject: input.subject,
       kind: input.kind,
@@ -238,12 +244,8 @@ export class AlchemyService {
   }): Promise<Knowledge> {
     const agent = await this.#requireAgent(input.agentId);
     const institutionalStanding = input.institutionalStanding ?? 'unendorsed';
+    this.#registry.assertEpistemicStandingAllowed(input.kind, input.epistemicStanding);
     const stage = legacyStageProjection(input.epistemicStanding, institutionalStanding);
-    const def = this.#registry.knowledgeKind(input.kind);
-    if (!def.allowedStages.includes(stage)) {
-      throw new DomainRuleError(
-        `legacy projection ${stage} not allowed for knowledge kind ${input.kind}`);
-    }
     const record: Knowledge = {
       id: newUuid(), subject: input.subject, subjectKind: 'entity',
       kind: input.kind, stage,
@@ -274,12 +276,8 @@ export class AlchemyService {
 
     const institutional =
       current.institutionalStanding ?? standingsFromLegacy(current.stage).institutional;
+    this.#registry.assertEpistemicStandingAllowed(current.kind, to);
     const stage = legacyStageProjection(to, institutional);
-    const def = this.#registry.knowledgeKind(current.kind);
-    if (!def.allowedStages.includes(stage)) {
-      throw new DomainRuleError(
-        `legacy projection ${stage} not allowed for knowledge kind ${current.kind}`);
-    }
 
     const now = this.#clock();
     const updated: Knowledge = {
@@ -332,12 +330,9 @@ export class AlchemyService {
 
     const epistemic =
       current.epistemicStanding ?? standingsFromLegacy(current.stage).epistemic;
+    // Institutional endorsement is orthogonal to epistemic-kind maturity.
+    // The legacy stage is only a compatibility projection and must not veto it.
     const stage = legacyStageProjection(epistemic, to);
-    const def = this.#registry.knowledgeKind(current.kind);
-    if (!def.allowedStages.includes(stage)) {
-      throw new DomainRuleError(
-        `legacy projection ${stage} not allowed for knowledge kind ${current.kind}`);
-    }
 
     const now = this.#clock();
     const updated: Knowledge = {
