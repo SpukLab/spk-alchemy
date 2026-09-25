@@ -1,4 +1,4 @@
-import type { EpistemicStage } from '../core/primitives.ts';
+import type { EpistemicStage, EpistemicStanding } from '../core/primitives.ts';
 import { DomainRuleError } from '../core/errors.ts';
 
 /** Canonical data contracts. Domains extend these; they never replace them. */
@@ -17,7 +17,12 @@ export interface RelationshipTypeDefinition {
 }
 export interface KnowledgeKindDefinition {
   kind: string;
+  /**
+   * Legacy ADR-002 compatibility contract. New orthogonal logic must validate
+   * epistemic maturity through allowedEpistemicStandings instead.
+   */
   allowedStages: readonly EpistemicStage[];
+  allowedEpistemicStandings: readonly EpistemicStanding[];
   requiresConfidence?: boolean;
 }
 
@@ -57,6 +62,14 @@ export class DataRegistry {
     return d;
   }
   roles(): string[] { return [...this.#roles]; }
+
+  assertEpistemicStandingAllowed(kind: string, standing: EpistemicStanding): void {
+    const def = this.knowledgeKind(kind);
+    if (!def.allowedEpistemicStandings.includes(standing)) {
+      throw new DomainRuleError(
+        `epistemic standing ${standing} not allowed for knowledge kind ${kind}`);
+    }
+  }
 
   assertTransitionAllowed(type: string, from: string, to: string): void {
     const def = this.entityType(type);

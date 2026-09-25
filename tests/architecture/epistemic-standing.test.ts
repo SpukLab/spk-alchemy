@@ -11,6 +11,7 @@ import { AlchemyService } from '../../src/domain/alchemy/service.ts';
 import { AlchemyQueries } from '../../src/query/queries.ts';
 import { migrate, CURRENT_SCHEMA } from '../../src/migrations/index.ts';
 import { synthesize, encodeWav } from '../../src/audio/wav.ts';
+import { ANALYZER_V1 } from '../../src/audio/analyzer.ts';
 import { COLLECTIONS } from '../../src/core/primitives.ts';
 
 async function lab() {
@@ -206,5 +207,41 @@ test('ADR-011: repeated standing edges remain distinct events after regression',
     3,
     'each historical occurrence has distinct event identity',
   );
+  await l.records.close();
+});
+
+
+test('ADR-011: institutional endorsement does not depend on legacy kind stage rules', async () => {
+  const l = await lab();
+  const analyzer = await l.service.registerAgent({
+    kind: 'analyzer', name: 'physical-analyzer', version: '1.0.0',
+  });
+  const observation = await l.service.analyzeMaterial(
+    l.source.id, ANALYZER_V1, analyzer.id);
+
+  assert.equal(observation.epistemicStanding, 'observation');
+  assert.equal(observation.institutionalStanding, 'unendorsed');
+
+  // physicalAnalysis legacy allowedStages never included 'canon'. Endorsement
+  // must still be possible because institutional standing is an independent axis.
+  const endorsed = await l.service.setKnowledgeInstitutionalStanding(
+    observation.id, 'endorsed', l.artist.id, 'institution accepts this observation');
+
+  assert.equal(endorsed.knowledge.epistemicStanding, 'observation',
+    'endorsement must not manufacture validated/durable standing');
+  assert.equal(endorsed.knowledge.institutionalStanding, 'endorsed');
+  assert.equal(endorsed.knowledge.stage, 'canon',
+    'legacy stage may project canon without becoming the authority');
+
+  const canon = await l.queries.canonKnowledgeForSubject(l.source.id);
+  assert.ok(canon.some((k) => k.id === observation.id));
+
+  await assert.rejects(
+    () => l.service.transitionKnowledgeEpistemicStanding(
+      observation.id, 'durable', l.artist.id, 'invalid maturity jump for this kind'),
+    /epistemic standing durable not allowed/,
+    'epistemic kind constraints remain enforced independently',
+  );
+
   await l.records.close();
 });
