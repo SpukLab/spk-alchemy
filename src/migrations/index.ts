@@ -116,3 +116,84 @@ export async function migrate(store: MigrationStore): Promise<number> {
 export function normalizeLegacyKnowledgeRecord(record: StoredRecord): Knowledge {
   return backfillLegacyKnowledge(record) as unknown as Knowledge;
 }
+
+
+export interface PersistenceDiagnostics {
+  schemaVersion: number;
+  currentSchemaVersion: number;
+  knowledgeCount: number;
+  missingOrthogonalStandings: number;
+  endorsedCount: number;
+  endorsedIndexCount: number;
+  legacyCanonCount: number;
+  epistemicUnknownCount: number;
+  orthogonalIndexConsistent: boolean;
+  migrationReady: boolean;
+}
+
+/**
+ * Read-only diagnostics for physical-device migration validation.
+ * This is deliberately exposed through the existing device diagnostics UI so
+ * Safari/iPhone validation does not require Web Inspector or a desktop.
+ */
+export async function collectPersistenceDiagnostics(
+  store: RecordStore,
+): Promise<PersistenceDiagnostics> {
+  let after: string | null = null;
+  let knowledgeCount = 0;
+  let missingOrthogonalStandings = 0;
+  let endorsedCount = 0;
+  let legacyCanonCount = 0;
+  let epistemicUnknownCount = 0;
+
+  for (;;) {
+    const page = await store.scan(COLLECTIONS.knowledge, after, 200);
+    for (const raw of page.items) {
+      knowledgeCount += 1;
+      if (!validEpistemicStanding(raw.epistemicStanding)
+        || !validInstitutionalStanding(raw.institutionalStanding)) {
+        missingOrthogonalStandings += 1;
+      }
+      if (raw.institutionalStanding === 'endorsed') endorsedCount += 1;
+      if (raw.stage === 'canon') legacyCanonCount += 1;
+      if (raw.epistemicStanding === 'unknown') epistemicUnknownCount += 1;
+    }
+    if (page.nextAfter === null) break;
+    after = String(page.nextAfter[0]);
+  }
+
+  let endorsedAfter: import('../persistence/keys.ts').KeyTuple | undefined;
+  let endorsedIndexCount = 0;
+  for (;;) {
+    const page = await store.lookup({
+      collection: COLLECTIONS.knowledge,
+      index: 'kno_by_subject_institutional',
+      range: {},
+      after: endorsedAfter,
+      limit: 200,
+    });
+    for (const raw of page.items) {
+      if (raw.institutionalStanding === 'endorsed') endorsedIndexCount += 1;
+    }
+    if (page.nextAfter === null) break;
+    endorsedAfter = page.nextAfter;
+  }
+
+  const schemaVersion = await store.schemaVersion();
+  const orthogonalIndexConsistent = endorsedIndexCount === endorsedCount;
+  return {
+    schemaVersion,
+    currentSchemaVersion: CURRENT_SCHEMA.version,
+    knowledgeCount,
+    missingOrthogonalStandings,
+    endorsedCount,
+    endorsedIndexCount,
+    legacyCanonCount,
+    epistemicUnknownCount,
+    orthogonalIndexConsistent,
+    migrationReady:
+      schemaVersion === CURRENT_SCHEMA.version
+      && missingOrthogonalStandings === 0
+      && orthogonalIndexConsistent,
+  };
+}

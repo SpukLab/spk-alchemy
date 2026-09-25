@@ -5,7 +5,12 @@ import { registerAlchemyVocabulary, LIFECYCLE } from '../domain/alchemy/vocabula
 import { AlchemyService } from '../domain/alchemy/service.ts';
 import type { Preview } from '../domain/alchemy/service.ts';
 import { AlchemyQueries } from '../query/queries.ts';
-import { CURRENT_SCHEMA, migrate } from '../migrations/index.ts';
+import {
+  CURRENT_SCHEMA,
+  migrate,
+  collectPersistenceDiagnostics,
+} from '../migrations/index.ts';
+import type { PersistenceDiagnostics } from '../migrations/index.ts';
 import { DEFAULT_FRAGMENT_EXPLORATION } from '../domain/alchemy/research-configuration.ts';
 import type { ResearchConfiguration } from '../domain/alchemy/research-configuration.ts';
 
@@ -41,6 +46,8 @@ export interface FamilyExport { filename: string; zip: Uint8Array; manifest: Dna
 
 export interface WebLab {
   recorderCapability: RecorderCapability;
+  /** Read-only local-store status used by the existing Device diagnostics UI. */
+  persistenceDiagnostics(): Promise<PersistenceDiagnostics>;
   /** Which exploration configuration new explorations currently use. */
   explorationConfiguration: Pick<ResearchConfiguration, 'id' | 'version'>;
   // Family / DNA Pack curation
@@ -163,6 +170,9 @@ export async function openWebLab(): Promise<WebLab> {
 
   return {
     recorderCapability: detectRecorderCapability(),
+    async persistenceDiagnostics() {
+      return collectPersistenceDiagnostics(records);
+    },
     explorationConfiguration: {
       id: DEFAULT_FRAGMENT_EXPLORATION.id, version: DEFAULT_FRAGMENT_EXPLORATION.version,
     },
