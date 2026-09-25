@@ -3,6 +3,7 @@ import type { ContentStore } from '../../persistence/content-store.ts';
 import type { DataRegistry } from '../../registries/data-registry.ts';
 import type {
   Agent, AgentKind, Entity, Knowledge, Relationship, Transition, Json,
+  EpistemicStanding, InstitutionalStanding,
 } from '../../core/primitives.ts';
 import { COLLECTIONS } from '../../core/primitives.ts';
 import { newUuid, contentHash, idempotencyKey } from '../../core/ids.ts';
@@ -35,6 +36,38 @@ import {
 } from './mesa-relational.ts';
 
 const SCHEMA_VERSION = 1;
+
+function epistemicStandingFromLegacy(stage: Knowledge['stage']): EpistemicStanding {
+  switch (stage) {
+    case 'observation': return 'observation';
+    case 'hypothesis': return 'hypothesis';
+    case 'validated': return 'validated';
+    case 'deprecated': return 'deprecated';
+    case 'canon':
+      // Legacy canon encoded institutional endorsement but did not preserve
+      // the independent epistemic standing. Never invent it during migration.
+      return 'unknown';
+  }
+}
+
+function institutionalStandingFromLegacy(
+  stage: Knowledge['stage'],
+): InstitutionalStanding {
+  return stage === 'canon' ? 'endorsed' : 'unendorsed';
+}
+
+function legacyStageProjection(
+  epistemic: EpistemicStanding,
+  institutional: InstitutionalStanding,
+): Knowledge['stage'] {
+  // Existing queries/indexes still read stage='canon'. Preserve that projection
+  // while ADR-011 is experimental, without treating it as epistemic truth.
+  if (institutional === 'endorsed') return 'canon';
+  if (epistemic === 'deprecated') return 'deprecated';
+  if (epistemic === 'observation') return 'observation';
+  if (epistemic === 'hypothesis' || epistemic === 'unknown') return 'hypothesis';
+  return 'validated'; // validated and durable share the legacy projection.
+}
 
 /**
  * A Preview exists only in runtime. It has no canonical identity, is absent
@@ -183,6 +216,7 @@ export class AlchemyService {
     const observation: Knowledge = {
       id: newUuid(), subject: materialId, subjectKind: 'entity',
       kind: KNOWLEDGE_KIND.physicalAnalysis, stage: 'observation',
+      epistemicStanding: 'observation', institutionalStanding: 'unendorsed',
       payload: { ...metrics, sourceContentHash: hash, analysisSchemaVersion: ANALYSIS_SCHEMA_VERSION },
       agentId: agent.id, agentVersion: agent.version, evidence: [hash],
       confidence: null, schemaVersion: SCHEMA_VERSION,
@@ -194,20 +228,59 @@ export class AlchemyService {
     return observation;
   }
 
-  /** Curated human conclusion; used to demonstrate the canon view. */
+  /**
+   * Legacy ADR-002 entry point retained for compatibility.
+   *
+   * 'canon' is interpreted as institutional endorsement with UNKNOWN epistemic
+   * standing because legacy data never preserved those dimensions separately.
+   */
   async assertKnowledge(input: {
     subject: string; kind: string; stage: Knowledge['stage'];
     payload: Record<string, Json>; agentId: string;
     confidence?: number; supersedes?: string; evidence?: string[];
   }): Promise<Knowledge> {
+    return this.assertEpistemicRecord({
+      subject: input.subject,
+      kind: input.kind,
+      epistemicStanding: epistemicStandingFromLegacy(input.stage),
+      institutionalStanding: institutionalStandingFromLegacy(input.stage),
+      payload: input.payload,
+      agentId: input.agentId,
+      confidence: input.confidence,
+      supersedes: input.supersedes,
+      evidence: input.evidence,
+    });
+  }
+
+  /**
+   * ADR-011 experimental path: persistence is independent from epistemic and
+   * institutional standing. No new structural primitive or collection.
+   */
+  async assertEpistemicRecord(input: {
+    subject: string;
+    kind: string;
+    epistemicStanding: EpistemicStanding;
+    institutionalStanding?: InstitutionalStanding;
+    payload: Record<string, Json>;
+    agentId: string;
+    confidence?: number;
+    supersedes?: string;
+    evidence?: string[];
+  }): Promise<Knowledge> {
     const agent = await this.#requireAgent(input.agentId);
+    const institutionalStanding = input.institutionalStanding ?? 'unendorsed';
+    const stage = legacyStageProjection(input.epistemicStanding, institutionalStanding);
     const def = this.#registry.knowledgeKind(input.kind);
-    if (!def.allowedStages.includes(input.stage)) {
-      throw new DomainRuleError(`stage ${input.stage} not allowed for kind ${input.kind}`);
+    if (!def.allowedStages.includes(stage)) {
+      throw new DomainRuleError(
+        `legacy projection ${stage} not allowed for knowledge kind ${input.kind}`);
     }
     const record: Knowledge = {
       id: newUuid(), subject: input.subject, subjectKind: 'entity',
-      kind: input.kind, stage: input.stage, payload: input.payload,
+      kind: input.kind, stage,
+      epistemicStanding: input.epistemicStanding,
+      institutionalStanding,
+      payload: input.payload,
       agentId: agent.id, agentVersion: agent.version,
       evidence: input.evidence ?? [], confidence: input.confidence ?? null,
       schemaVersion: SCHEMA_VERSION, createdAt: this.#clock(),
@@ -217,6 +290,120 @@ export class AlchemyService {
       { op: 'put', collection: COLLECTIONS.knowledge, record: record as never },
     ]);
     return record;
+  }
+
+  async transitionKnowledgeEpistemicStanding(
+    knowledgeId: string,
+    to: EpistemicStanding,
+    agentId: string,
+    rationale?: string,
+  ): Promise<{ knowledge: Knowledge; transition: Transition | null; changed: boolean }> {
+    const agent = await this.#requireAgent(agentId);
+    const current = await this.#requireKnowledge(knowledgeId);
+    const from = current.epistemicStanding ?? epistemicStandingFromLegacy(current.stage);
+    if (from === to) return { knowledge: current, transition: null, changed: false };
+
+    const institutional =
+      current.institutionalStanding ?? institutionalStandingFromLegacy(current.stage);
+    const stage = legacyStageProjection(to, institutional);
+    const def = this.#registry.knowledgeKind(current.kind);
+    if (!def.allowedStages.includes(stage)) {
+      throw new DomainRuleError(
+        `legacy projection ${stage} not allowed for knowledge kind ${current.kind}`);
+    }
+
+    const now = this.#clock();
+    const updated: Knowledge = {
+      ...current,
+      stage,
+      epistemicStanding: to,
+      institutionalStanding: institutional,
+    };
+    const transitionId = newUuid();
+    const transition: Transition = {
+      id: transitionId,
+      subject: current.id,
+      kind: 'knowledge-epistemic-standing',
+      fromState: from,
+      toState: to,
+      agentId: agent.id,
+      // The same semantic edge may legitimately recur after a regression.
+      // The whole Knowledge+Transition batch is atomic, so this event identity
+      // must be unique rather than collapsing later history into an old event.
+      idempotencyKey: idempotencyKey(
+        'knowledge-epistemic-standing', current.id, transitionId),
+      rationale: rationale ?? null,
+      context: {
+        dimension: 'epistemic',
+        legacyStageFrom: current.stage,
+        legacyStageTo: stage,
+      },
+      schemaVersion: SCHEMA_VERSION,
+      createdAt: now,
+    };
+
+    await this.#records.commit([
+      { op: 'put', collection: COLLECTIONS.knowledge, record: updated as never },
+      { op: 'put', collection: COLLECTIONS.transitions, record: transition as never },
+    ]);
+    return { knowledge: updated, transition, changed: true };
+  }
+
+  async setKnowledgeInstitutionalStanding(
+    knowledgeId: string,
+    to: InstitutionalStanding,
+    agentId: string,
+    rationale?: string,
+  ): Promise<{ knowledge: Knowledge; transition: Transition | null; changed: boolean }> {
+    const agent = await this.#requireAgent(agentId);
+    const current = await this.#requireKnowledge(knowledgeId);
+    const from =
+      current.institutionalStanding ?? institutionalStandingFromLegacy(current.stage);
+    if (from === to) return { knowledge: current, transition: null, changed: false };
+
+    const epistemic =
+      current.epistemicStanding ?? epistemicStandingFromLegacy(current.stage);
+    const stage = legacyStageProjection(epistemic, to);
+    const def = this.#registry.knowledgeKind(current.kind);
+    if (!def.allowedStages.includes(stage)) {
+      throw new DomainRuleError(
+        `legacy projection ${stage} not allowed for knowledge kind ${current.kind}`);
+    }
+
+    const now = this.#clock();
+    const updated: Knowledge = {
+      ...current,
+      stage,
+      epistemicStanding: epistemic,
+      institutionalStanding: to,
+    };
+    const transitionId = newUuid();
+    const transition: Transition = {
+      id: transitionId,
+      subject: current.id,
+      kind: 'knowledge-institutional-standing',
+      fromState: from,
+      toState: to,
+      agentId: agent.id,
+      // Endorsement may be withdrawn and later granted again; preserve each
+      // occurrence as a distinct EVENT instead of deduplicating history.
+      idempotencyKey: idempotencyKey(
+        'knowledge-institutional-standing', current.id, transitionId),
+      rationale: rationale ?? null,
+      context: {
+        dimension: 'institutional',
+        legacyStageFrom: current.stage,
+        legacyStageTo: stage,
+      },
+      schemaVersion: SCHEMA_VERSION,
+      createdAt: now,
+    };
+
+    await this.#records.commit([
+      { op: 'put', collection: COLLECTIONS.knowledge, record: updated as never },
+      { op: 'put', collection: COLLECTIONS.transitions, record: transition as never },
+    ]);
+    return { knowledge: updated, transition, changed: true };
   }
 
   // ---- research intent and experiments -------------------------------------
@@ -741,6 +928,12 @@ export class AlchemyService {
       id: newUuid(), type, source, target, agentId, evidence: [],
       metadata, schemaVersion: SCHEMA_VERSION, createdAt,
     };
+  }
+
+  async #requireKnowledge(id: string): Promise<Knowledge> {
+    const k = await this.#records.get(COLLECTIONS.knowledge, id);
+    if (!k) throw new NotFoundError(COLLECTIONS.knowledge, id);
+    return k as unknown as Knowledge;
   }
 
   async #requireEntity(id: string): Promise<Entity> {

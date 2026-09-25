@@ -42,16 +42,37 @@ export interface Relationship {
   updatedAt?: number;
 }
 
+/**
+ * Legacy ADR-002 scalar projection.
+ *
+ * ADR-011 (PROPOSED) demonstrates that epistemic standing and institutional
+ * endorsement are orthogonal. Keep this field for backwards-compatible reads
+ * and existing indexes while the proposal is experimentally validated.
+ */
 export type EpistemicStage =
   | 'observation' | 'hypothesis' | 'validated' | 'canon' | 'deprecated';
 
-/** A claim about a subject. Distinct from the subject's identity. */
+export type EpistemicStanding =
+  | 'unknown' | 'observation' | 'hypothesis' | 'validated' | 'durable' | 'deprecated';
+
+export type InstitutionalStanding =
+  | 'unendorsed' | 'endorsed' | 'withdrawn';
+
+/** A persisted claim-bearing record. Distinct from the subject's identity. */
 export interface Knowledge {
   id: string;
   subject: string;
   subjectKind: 'entity' | 'relationship';
   kind: string;
+  /**
+   * Backwards-compatible projection only. New logic must use the orthogonal
+   * standings below; 'canon' here does not mean a higher epistemic stage.
+   */
   stage: EpistemicStage;
+  /** Optional for legacy persisted records written before ADR-011 validation. */
+  epistemicStanding?: EpistemicStanding;
+  /** Optional for legacy persisted records written before ADR-011 validation. */
+  institutionalStanding?: InstitutionalStanding;
   payload: Record<string, Json>;
   agentId: string;
   agentVersion: string;
