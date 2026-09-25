@@ -34,6 +34,12 @@ import type { InputConditioningState } from '../domain/alchemy/conditioning.ts';
 import type { MesaState } from '../domain/alchemy/mesa.ts';
 import type { MesaPreviewSet, RelationalMesaPreviewSet } from '../domain/alchemy/service.ts';
 import type { RelationMode } from '../domain/alchemy/mesa-relational.ts';
+import {
+  prepareAdr011PhysicalMigrationProbe,
+  verifyAdr011PhysicalMigrationProbe,
+  cleanupAdr011PhysicalMigrationProbe,
+} from './adr011-physical-probe.ts';
+import type { Adr011PhysicalProbeResult } from './adr011-physical-probe.ts';
 
 /**
  * Browser composition root.
@@ -48,6 +54,12 @@ export interface WebLab {
   recorderCapability: RecorderCapability;
   /** Read-only local-store status used by the existing Device diagnostics UI. */
   persistenceDiagnostics(): Promise<PersistenceDiagnostics>;
+  /** Creates and migrates an isolated real IndexedDB V1 corpus. Caller must then reload. */
+  prepareAdr011PhysicalMigrationProbe(): Promise<Adr011PhysicalProbeResult>;
+  /** Reopens the migrated probe after reload and verifies identity/backfill/indexes. */
+  verifyAdr011PhysicalMigrationProbe(): Promise<Adr011PhysicalProbeResult>;
+  /** Removes only the dedicated ADR-011 probe database. */
+  cleanupAdr011PhysicalMigrationProbe(): Promise<void>;
   /** Which exploration configuration new explorations currently use. */
   explorationConfiguration: Pick<ResearchConfiguration, 'id' | 'version'>;
   // Family / DNA Pack curation
@@ -173,6 +185,9 @@ export async function openWebLab(): Promise<WebLab> {
     async persistenceDiagnostics() {
       return collectPersistenceDiagnostics(records);
     },
+    prepareAdr011PhysicalMigrationProbe,
+    verifyAdr011PhysicalMigrationProbe,
+    cleanupAdr011PhysicalMigrationProbe,
     explorationConfiguration: {
       id: DEFAULT_FRAGMENT_EXPLORATION.id, version: DEFAULT_FRAGMENT_EXPLORATION.version,
     },
