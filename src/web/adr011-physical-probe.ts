@@ -9,7 +9,7 @@ import {
 } from '../migrations/index.ts';
 import type { PersistenceDiagnostics } from '../migrations/index.ts';
 
-export const ADR011_PHYSICAL_PROBE_DB = 'alchemy-adr011-physical-migration-probe';
+export const ADR011_PHYSICAL_PROBE_DB_PREFIX = 'alchemy-adr011-physical-migration-probe';
 
 type IDBFactoryLike = Pick<IDBFactory, 'open' | 'deleteDatabase'>;
 
@@ -60,12 +60,21 @@ function idb(factory?: IDBFactoryLike): IDBFactoryLike {
   return resolved;
 }
 
-function deleteDatabase(name: string, factory?: IDBFactoryLike): Promise<void> {
+function uniqueProbeDatabaseName(): string {
+  const cryptoLike = globalThis.crypto as Crypto | undefined;
+  const suffix = cryptoLike?.randomUUID?.()
+    ?? `${Date.now()}-${Math.trunc(globalThis.performance?.now?.() ?? 0)}`;
+  return `${ADR011_PHYSICAL_PROBE_DB_PREFIX}-${suffix}`;
+}
+
+function deleteDatabaseBestEffort(name: string, factory?: IDBFactoryLike): Promise<boolean> {
   const req = idb(factory).deleteDatabase(name);
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error ?? new Error('could not delete probe database'));
-    req.onblocked = () => reject(new Error('probe database deletion blocked by an open connection'));
+  return new Promise((resolve) => {
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => resolve(false);
+    // Safari can report blocked while an old document/connection is still
+    // winding down. Cleanup must never invalidate an already successful probe.
+    req.onblocked = () => resolve(false);
   });
 }
 
@@ -179,10 +188,12 @@ async function inspectMigratedCorpus(
  * real Safari document lifecycle.
  */
 export async function prepareAdr011PhysicalMigrationProbe(
-  databaseName: string = ADR011_PHYSICAL_PROBE_DB,
+  databaseName: string = uniqueProbeDatabaseName(),
   factory?: IDBFactoryLike,
 ): Promise<Adr011PhysicalProbeResult> {
-  await deleteDatabase(databaseName, factory);
+  // A fresh unique database avoids Safari's deleteDatabase/onblocked race from
+  // previous probe documents. Isolation is cheaper and more reliable than
+  // requiring deletion before every run.
   await seedLegacyCorpus(databaseName, factory);
   return inspectMigratedCorpus(databaseName, factory);
 }
@@ -192,15 +203,17 @@ export async function prepareAdr011PhysicalMigrationProbe(
  * migrate() runs again intentionally to prove the V2 migration is idempotent.
  */
 export async function verifyAdr011PhysicalMigrationProbe(
-  databaseName: string = ADR011_PHYSICAL_PROBE_DB,
+  databaseName: string,
   factory?: IDBFactoryLike,
 ): Promise<Adr011PhysicalProbeResult> {
+  if (!databaseName) throw new Error('physical probe database name is required after reload');
   return inspectMigratedCorpus(databaseName, factory);
 }
 
 export async function cleanupAdr011PhysicalMigrationProbe(
-  databaseName: string = ADR011_PHYSICAL_PROBE_DB,
+  databaseName: string,
   factory?: IDBFactoryLike,
-): Promise<void> {
-  await deleteDatabase(databaseName, factory);
+): Promise<boolean> {
+  if (!databaseName) return false;
+  return deleteDatabaseBestEffort(databaseName, factory);
 }

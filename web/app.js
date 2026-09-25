@@ -890,7 +890,9 @@ async function resumeAdr011PhysicalProbe() {
     return;
   }
   try {
-    const phase2 = await state.lab.verifyAdr011PhysicalMigrationProbe();
+    const databaseName = saved.phase1?.databaseName;
+    if (!databaseName) throw new Error('falta la identidad de la base de prueba después de recargar');
+    const phase2 = await state.lab.verifyAdr011PhysicalMigrationProbe(databaseName);
     if (!phase2.ok) throw new Error('el corpus migrado no conservó identidad/backfill/índices');
     const completed = {
       ...saved,
@@ -899,7 +901,10 @@ async function resumeAdr011PhysicalProbe() {
       phase2,
     };
     writeAdr011ProbeState(completed);
-    await state.lab.cleanupAdr011PhysicalMigrationProbe();
+    // Cleanup is deliberately best-effort. Safari may keep a just-closed
+    // connection alive briefly; that must not turn a successful migration
+    // verification into a failure.
+    await state.lab.cleanupAdr011PhysicalMigrationProbe(databaseName);
   } catch (err) {
     writeAdr011ProbeState({
       ...saved,
