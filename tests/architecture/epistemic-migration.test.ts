@@ -7,7 +7,11 @@ import { join } from 'node:path';
 import { SqliteRecordStore } from '../../src/adapters/node-sqlite/record-store.ts';
 import { IndexedDbRecordStore } from '../../src/adapters/indexeddb/record-store.ts';
 import type { MigrationStore } from '../../src/migrations/index.ts';
-import { migrate, CURRENT_SCHEMA } from '../../src/migrations/index.ts';
+import {
+  migrate,
+  CURRENT_SCHEMA,
+  collectPersistenceDiagnostics,
+} from '../../src/migrations/index.ts';
 import { SCHEMA_V1 } from '../../src/persistence/schema.ts';
 import { COLLECTIONS } from '../../src/core/primitives.ts';
 import type { Knowledge } from '../../src/core/primitives.ts';
@@ -85,6 +89,16 @@ async function assertMigrated(store: MigrationStore): Promise<void> {
     limit: 20,
   });
   assert.deepEqual(epistemicValidated.items.map((x) => x.id), ['k-validated']);
+
+  const diagnostics = await collectPersistenceDiagnostics(store);
+  assert.equal(diagnostics.schemaVersion, CURRENT_SCHEMA.version);
+  assert.equal(diagnostics.missingOrthogonalStandings, 0);
+  assert.equal(diagnostics.endorsedCount, 2);
+  assert.equal(diagnostics.endorsedIndexCount, 2);
+  assert.equal(diagnostics.legacyCanonCount, 2);
+  assert.equal(diagnostics.epistemicUnknownCount, 1);
+  assert.equal(diagnostics.orthogonalIndexConsistent, true);
+  assert.equal(diagnostics.migrationReady, true);
 
   const before = await store.scan(COLLECTIONS.knowledge, null, 100);
   assert.equal(await migrate(store), 2, 'migration is idempotent after version advance');
