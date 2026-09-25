@@ -4326,7 +4326,7 @@ function territoryLabel(territory) {
 }
 
 // src/web/adr011-physical-probe.ts
-var ADR011_PHYSICAL_PROBE_DB = "alchemy-adr011-physical-migration-probe";
+var ADR011_PHYSICAL_PROBE_DB_PREFIX = "alchemy-adr011-physical-migration-probe";
 var SUBJECT = "adr011-physical-probe-subject";
 var IDS = ["adr011-probe-canon", "adr011-probe-validated", "adr011-probe-explicit"];
 function legacy(id, stage, createdAt, extra = {}) {
@@ -4352,12 +4352,17 @@ function idb(factory) {
   if (!resolved) throw new Error("IndexedDB is not available");
   return resolved;
 }
-function deleteDatabase(name, factory) {
+function uniqueProbeDatabaseName() {
+  const cryptoLike = globalThis.crypto;
+  const suffix = cryptoLike?.randomUUID?.() ?? `${Date.now()}-${Math.trunc(globalThis.performance?.now?.() ?? 0)}`;
+  return `${ADR011_PHYSICAL_PROBE_DB_PREFIX}-${suffix}`;
+}
+function deleteDatabaseBestEffort(name, factory) {
   const req = idb(factory).deleteDatabase(name);
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error ?? new Error("could not delete probe database"));
-    req.onblocked = () => reject(new Error("probe database deletion blocked by an open connection"));
+  return new Promise((resolve) => {
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => resolve(false);
+    req.onblocked = () => resolve(false);
   });
 }
 async function seedLegacyCorpus(databaseName, factory) {
@@ -4427,16 +4432,17 @@ async function inspectMigratedCorpus(databaseName, factory) {
     await store.close();
   }
 }
-async function prepareAdr011PhysicalMigrationProbe(databaseName = ADR011_PHYSICAL_PROBE_DB, factory) {
-  await deleteDatabase(databaseName, factory);
+async function prepareAdr011PhysicalMigrationProbe(databaseName = uniqueProbeDatabaseName(), factory) {
   await seedLegacyCorpus(databaseName, factory);
   return inspectMigratedCorpus(databaseName, factory);
 }
-async function verifyAdr011PhysicalMigrationProbe(databaseName = ADR011_PHYSICAL_PROBE_DB, factory) {
+async function verifyAdr011PhysicalMigrationProbe(databaseName, factory) {
+  if (!databaseName) throw new Error("physical probe database name is required after reload");
   return inspectMigratedCorpus(databaseName, factory);
 }
-async function cleanupAdr011PhysicalMigrationProbe(databaseName = ADR011_PHYSICAL_PROBE_DB, factory) {
-  await deleteDatabase(databaseName, factory);
+async function cleanupAdr011PhysicalMigrationProbe(databaseName, factory) {
+  if (!databaseName) return false;
+  return deleteDatabaseBestEffort(databaseName, factory);
 }
 
 // src/web/lab.ts

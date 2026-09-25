@@ -10,7 +10,7 @@
  * The laboratory still works with no network: the fallback covers that. What it
  * no longer does is trap the device on an old build.
  */
-const CACHE = 'alchemy-shell-5a2711a';
+const CACHE = 'alchemy-shell-bceebff';
 const SHELL = [
   './', './index.html', './app.js', './lab.js', './export-orchestrator.js', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
