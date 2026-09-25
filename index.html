@@ -360,6 +360,9 @@ audio{width:100%;margin-top:8px;filter:invert(.9) hue-rotate(180deg)}
   <section>
     <h2>Dispositivo</h2>
     <button id="diag-toggle" style="width:100%">Ver compatibilidad</button>
+    <button id="adr011-probe" style="width:100%;margin-top:8px">Probar migración V1 → V2 + recarga</button>
+    <div id="adr011-probe-result" class="hint" hidden style="margin-top:8px"></div>
+    <p class="hint" style="margin-top:8px">La prueba usa una base IndexedDB separada. No modifica tus materiales de Alchemy y recarga la página una vez para verificar persistencia real.</p>
     <button id="hard-reset" style="width:100%;margin-top:8px">Limpiar caché y recargar</button>
     <div id="diag" hidden></div>
     <p class="hint" style="margin-top:14px">

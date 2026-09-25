@@ -82,6 +82,23 @@ var SCHEMA_V1 = {
     }
   ]
 };
+var SCHEMA_V2 = {
+  version: 2,
+  collections: SCHEMA_V1.collections,
+  indexes: [
+    ...SCHEMA_V1.indexes,
+    {
+      name: "kno_by_subject_epistemic",
+      collection: COLLECTIONS.knowledge,
+      fields: ["subject", "epistemicStanding", "createdAt", "id"]
+    },
+    {
+      name: "kno_by_subject_institutional",
+      collection: COLLECTIONS.knowledge,
+      fields: ["subject", "institutionalStanding", "createdAt", "id"]
+    }
+  ]
+};
 function indexesFor(schema, collection) {
   return schema.indexes.filter((i) => i.collection === collection);
 }
@@ -292,9 +309,9 @@ var IndexedDbRecordStore = class _IndexedDbRecordStore {
     this.#schema = schema;
   }
   static async open(databaseName, schema, factory) {
-    const idb = factory ?? globalThis.indexedDB;
-    if (!idb) throw new Error("IndexedDB is not available in this environment");
-    const req = idb.open(databaseName, schema.version);
+    const idb2 = factory ?? globalThis.indexedDB;
+    if (!idb2) throw new Error("IndexedDB is not available in this environment");
+    const req = idb2.open(databaseName, schema.version);
     req.onupgradeneeded = () => {
       const db2 = req.result;
       for (const collection of schema.collections) {
@@ -682,9 +699,9 @@ var IndexedDbContentStore = class _IndexedDbContentStore {
     this.#db = db;
   }
   static async open(databaseName, factory) {
-    const idb = factory ?? globalThis.indexedDB;
-    if (!idb) throw new Error("IndexedDB is not available in this environment");
-    const req = idb.open(databaseName, 1);
+    const idb2 = factory ?? globalThis.indexedDB;
+    if (!idb2) throw new Error("IndexedDB is not available in this environment");
+    const req = idb2.open(databaseName, 1);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
@@ -764,6 +781,14 @@ var DataRegistry = class {
   }
   roles() {
     return [...this.#roles];
+  }
+  assertEpistemicStandingAllowed(kind, standing) {
+    const def = this.knowledgeKind(kind);
+    if (!def.allowedEpistemicStandings.includes(standing)) {
+      throw new DomainRuleError(
+        `epistemic standing ${standing} not allowed for knowledge kind ${kind}`
+      );
+    }
   }
   assertTransitionAllowed(type, from, to) {
     const def = this.entityType(type);
@@ -914,17 +939,52 @@ function registerAlchemyVocabulary(data, view) {
   });
   data.registerKnowledgeKind({
     kind: KNOWLEDGE_KIND.physicalAnalysis,
-    allowedStages: ["observation", "deprecated"]
+    allowedStages: ["observation", "deprecated"],
+    allowedEpistemicStandings: ["unknown", "observation", "deprecated"]
   });
   data.registerKnowledgeKind({
     kind: KNOWLEDGE_KIND.curatedConclusion,
-    allowedStages: ["hypothesis", "validated", "canon", "deprecated"]
+    allowedStages: ["hypothesis", "validated", "canon", "deprecated"],
+    allowedEpistemicStandings: ["unknown", "hypothesis", "validated", "durable", "deprecated"]
   });
   view?.register(TYPE_AUDIO_MATERIAL, { label: "Material", group: "Inventory" });
   view?.register(TYPE_RESEARCH_INTENT, { label: "Research Intent", group: "Research" });
   view?.register(TYPE_EXPERIMENT, { label: "Experiment", group: "Research" });
   view?.register(TYPE_FAMILY, { label: "Family", group: "Curation" });
   view?.register(TYPE_DNA_PACK, { label: "DNA Pack", group: "Curation" });
+}
+
+// src/core/epistemic-state.ts
+var LEGACY_EPISTEMIC_STAGES = [
+  "observation",
+  "hypothesis",
+  "validated",
+  "canon",
+  "deprecated"
+];
+function isLegacyEpistemicStage(value) {
+  return typeof value === "string" && LEGACY_EPISTEMIC_STAGES.includes(value);
+}
+function standingsFromLegacy(stage) {
+  switch (stage) {
+    case "observation":
+      return { epistemic: "observation", institutional: "unendorsed" };
+    case "hypothesis":
+      return { epistemic: "hypothesis", institutional: "unendorsed" };
+    case "validated":
+      return { epistemic: "validated", institutional: "unendorsed" };
+    case "deprecated":
+      return { epistemic: "deprecated", institutional: "unendorsed" };
+    case "canon":
+      return { epistemic: "unknown", institutional: "endorsed" };
+  }
+}
+function legacyStageProjection(epistemic, institutional) {
+  if (institutional === "endorsed") return "canon";
+  if (epistemic === "deprecated") return "deprecated";
+  if (epistemic === "observation") return "observation";
+  if (epistemic === "hypothesis" || epistemic === "unknown") return "hypothesis";
+  return "validated";
 }
 
 // src/audio/wav.ts
@@ -2351,6 +2411,8 @@ var AlchemyService = class {
       subjectKind: "entity",
       kind: KNOWLEDGE_KIND.physicalAnalysis,
       stage: "observation",
+      epistemicStanding: "observation",
+      institutionalStanding: "unendorsed",
       payload: { ...metrics, sourceContentHash: hash, analysisSchemaVersion: ANALYSIS_SCHEMA_VERSION },
       agentId: agent.id,
       agentVersion: agent.version,
@@ -2365,19 +2427,48 @@ var AlchemyService = class {
     ]);
     return observation;
   }
-  /** Curated human conclusion; used to demonstrate the canon view. */
+  /**
+   * Legacy ADR-002 entry point retained for compatibility.
+   *
+   * 'canon' is interpreted as institutional endorsement with UNKNOWN epistemic
+   * standing because legacy data never preserved those dimensions separately.
+   */
   async assertKnowledge(input) {
-    const agent = await this.#requireAgent(input.agentId);
-    const def = this.#registry.knowledgeKind(input.kind);
-    if (!def.allowedStages.includes(input.stage)) {
-      throw new DomainRuleError(`stage ${input.stage} not allowed for kind ${input.kind}`);
+    const legacyDef = this.#registry.knowledgeKind(input.kind);
+    if (!legacyDef.allowedStages.includes(input.stage)) {
+      throw new DomainRuleError(
+        `stage ${input.stage} not allowed for knowledge kind ${input.kind}`
+      );
     }
+    return this.assertEpistemicRecord({
+      subject: input.subject,
+      kind: input.kind,
+      epistemicStanding: standingsFromLegacy(input.stage).epistemic,
+      institutionalStanding: standingsFromLegacy(input.stage).institutional,
+      payload: input.payload,
+      agentId: input.agentId,
+      confidence: input.confidence,
+      supersedes: input.supersedes,
+      evidence: input.evidence
+    });
+  }
+  /**
+   * ADR-011 experimental path: persistence is independent from epistemic and
+   * institutional standing. No new structural primitive or collection.
+   */
+  async assertEpistemicRecord(input) {
+    const agent = await this.#requireAgent(input.agentId);
+    const institutionalStanding = input.institutionalStanding ?? "unendorsed";
+    this.#registry.assertEpistemicStandingAllowed(input.kind, input.epistemicStanding);
+    const stage = legacyStageProjection(input.epistemicStanding, institutionalStanding);
     const record = {
       id: newUuid(),
       subject: input.subject,
       subjectKind: "entity",
       kind: input.kind,
-      stage: input.stage,
+      stage,
+      epistemicStanding: input.epistemicStanding,
+      institutionalStanding,
       payload: input.payload,
       agentId: agent.id,
       agentVersion: agent.version,
@@ -2391,6 +2482,96 @@ var AlchemyService = class {
       { op: "put", collection: COLLECTIONS.knowledge, record }
     ]);
     return record;
+  }
+  async transitionKnowledgeEpistemicStanding(knowledgeId, to, agentId, rationale) {
+    const agent = await this.#requireAgent(agentId);
+    const current = await this.#requireKnowledge(knowledgeId);
+    const from = current.epistemicStanding ?? standingsFromLegacy(current.stage).epistemic;
+    if (from === to) return { knowledge: current, transition: null, changed: false };
+    const institutional = current.institutionalStanding ?? standingsFromLegacy(current.stage).institutional;
+    this.#registry.assertEpistemicStandingAllowed(current.kind, to);
+    const stage = legacyStageProjection(to, institutional);
+    const now = this.#clock();
+    const updated = {
+      ...current,
+      stage,
+      epistemicStanding: to,
+      institutionalStanding: institutional
+    };
+    const transitionId = newUuid();
+    const transition = {
+      id: transitionId,
+      subject: current.id,
+      kind: "knowledge-epistemic-standing",
+      fromState: from,
+      toState: to,
+      agentId: agent.id,
+      // The same semantic edge may legitimately recur after a regression.
+      // The whole Knowledge+Transition batch is atomic, so this event identity
+      // must be unique rather than collapsing later history into an old event.
+      idempotencyKey: idempotencyKey(
+        "knowledge-epistemic-standing",
+        current.id,
+        transitionId
+      ),
+      rationale: rationale ?? null,
+      context: {
+        dimension: "epistemic",
+        legacyStageFrom: current.stage,
+        legacyStageTo: stage
+      },
+      schemaVersion: SCHEMA_VERSION,
+      createdAt: now
+    };
+    await this.#records.commit([
+      { op: "put", collection: COLLECTIONS.knowledge, record: updated },
+      { op: "put", collection: COLLECTIONS.transitions, record: transition }
+    ]);
+    return { knowledge: updated, transition, changed: true };
+  }
+  async setKnowledgeInstitutionalStanding(knowledgeId, to, agentId, rationale) {
+    const agent = await this.#requireAgent(agentId);
+    const current = await this.#requireKnowledge(knowledgeId);
+    const from = current.institutionalStanding ?? standingsFromLegacy(current.stage).institutional;
+    if (from === to) return { knowledge: current, transition: null, changed: false };
+    const epistemic = current.epistemicStanding ?? standingsFromLegacy(current.stage).epistemic;
+    const stage = legacyStageProjection(epistemic, to);
+    const now = this.#clock();
+    const updated = {
+      ...current,
+      stage,
+      epistemicStanding: epistemic,
+      institutionalStanding: to
+    };
+    const transitionId = newUuid();
+    const transition = {
+      id: transitionId,
+      subject: current.id,
+      kind: "knowledge-institutional-standing",
+      fromState: from,
+      toState: to,
+      agentId: agent.id,
+      // Endorsement may be withdrawn and later granted again; preserve each
+      // occurrence as a distinct EVENT instead of deduplicating history.
+      idempotencyKey: idempotencyKey(
+        "knowledge-institutional-standing",
+        current.id,
+        transitionId
+      ),
+      rationale: rationale ?? null,
+      context: {
+        dimension: "institutional",
+        legacyStageFrom: current.stage,
+        legacyStageTo: stage
+      },
+      schemaVersion: SCHEMA_VERSION,
+      createdAt: now
+    };
+    await this.#records.commit([
+      { op: "put", collection: COLLECTIONS.knowledge, record: updated },
+      { op: "put", collection: COLLECTIONS.transitions, record: transition }
+    ]);
+    return { knowledge: updated, transition, changed: true };
   }
   // ---- research intent and experiments -------------------------------------
   async createResearchIntent(input) {
@@ -2993,6 +3174,11 @@ var AlchemyService = class {
       createdAt
     };
   }
+  async #requireKnowledge(id) {
+    const k = await this.#records.get(COLLECTIONS.knowledge, id);
+    if (!k) throw new NotFoundError(COLLECTIONS.knowledge, id);
+    return k;
+  }
   async #requireEntity(id) {
     const e = await this.#records.get(COLLECTIONS.entities, id);
     if (!e) throw new NotFoundError(COLLECTIONS.entities, id);
@@ -3201,12 +3387,16 @@ var AlchemyQueries = class {
       return { metric, a: av, b: bv, equal: av === bv };
     });
   }
-  /** Q9. Canon is a view over Knowledge, never a separate store. */
+  /**
+   * Q9. Epistemic Canon is an institutional view over the same Knowledge
+   * collection, never a separate store. ADR-011: endorsement is independent
+   * from epistemic standing.
+   */
   async canonKnowledgeForSubject(subjectId, limit = 100) {
     const page = await this.#records.lookup({
       collection: COLLECTIONS.knowledge,
-      index: "kno_by_subject_stage",
-      prefix: [subjectId, "canon"],
+      index: "kno_by_subject_institutional",
+      prefix: [subjectId, "endorsed"],
       limit
     });
     return page.items;
@@ -3294,7 +3484,117 @@ var AlchemyQueries = class {
 };
 
 // src/migrations/index.ts
-var CURRENT_SCHEMA = SCHEMA_V1;
+function validEpistemicStanding(value) {
+  return ["unknown", "observation", "hypothesis", "validated", "durable", "deprecated"].includes(String(value));
+}
+function validInstitutionalStanding(value) {
+  return ["unendorsed", "endorsed", "withdrawn"].includes(String(value));
+}
+function backfillLegacyKnowledge(record) {
+  if (!isLegacyEpistemicStage(record.stage)) {
+    throw new Error(
+      `cannot migrate knowledge ${record.id}: unknown legacy stage ${String(record.stage)}`
+    );
+  }
+  const inferred = standingsFromLegacy(record.stage);
+  return {
+    ...record,
+    epistemicStanding: validEpistemicStanding(record.epistemicStanding) ? record.epistemicStanding : inferred.epistemic,
+    institutionalStanding: validInstitutionalStanding(record.institutionalStanding) ? record.institutionalStanding : inferred.institutional
+  };
+}
+async function migrateKnowledgeToOrthogonalStandings(store) {
+  let after = null;
+  for (; ; ) {
+    const page = await store.scan(COLLECTIONS.knowledge, after, 200);
+    if (page.items.length === 0) break;
+    const batch = page.items.map((raw) => ({
+      op: "put",
+      collection: COLLECTIONS.knowledge,
+      record: backfillLegacyKnowledge(raw)
+    }));
+    await store.commit(batch);
+    if (page.nextAfter === null) break;
+    after = String(page.nextAfter[0]);
+  }
+}
+var MIGRATIONS = [
+  {
+    version: 1,
+    description: "canonical collections and initial index declarations",
+    schema: SCHEMA_V1,
+    apply: async () => {
+    }
+  },
+  {
+    version: 2,
+    description: "orthogonal epistemic and institutional Knowledge standings",
+    schema: SCHEMA_V2,
+    apply: migrateKnowledgeToOrthogonalStandings
+  }
+];
+var CURRENT_SCHEMA = SCHEMA_V2;
+async function migrate(store) {
+  const current = await store.schemaVersion();
+  for (const m of MIGRATIONS) {
+    if (m.version <= current) continue;
+    await m.apply(store);
+    await store.setSchemaVersion(m.version);
+  }
+  return store.schemaVersion();
+}
+async function collectPersistenceDiagnostics(store) {
+  let after = null;
+  let knowledgeCount = 0;
+  let missingOrthogonalStandings = 0;
+  let endorsedCount = 0;
+  let legacyCanonCount = 0;
+  let epistemicUnknownCount = 0;
+  for (; ; ) {
+    const page = await store.scan(COLLECTIONS.knowledge, after, 200);
+    for (const raw of page.items) {
+      knowledgeCount += 1;
+      if (!validEpistemicStanding(raw.epistemicStanding) || !validInstitutionalStanding(raw.institutionalStanding)) {
+        missingOrthogonalStandings += 1;
+      }
+      if (raw.institutionalStanding === "endorsed") endorsedCount += 1;
+      if (raw.stage === "canon") legacyCanonCount += 1;
+      if (raw.epistemicStanding === "unknown") epistemicUnknownCount += 1;
+    }
+    if (page.nextAfter === null) break;
+    after = String(page.nextAfter[0]);
+  }
+  let endorsedAfter;
+  let endorsedIndexCount = 0;
+  for (; ; ) {
+    const page = await store.lookup({
+      collection: COLLECTIONS.knowledge,
+      index: "kno_by_subject_institutional",
+      range: {},
+      after: endorsedAfter,
+      limit: 200
+    });
+    for (const raw of page.items) {
+      if (raw.institutionalStanding === "endorsed") endorsedIndexCount += 1;
+    }
+    if (page.nextAfter === null) break;
+    endorsedAfter = page.nextAfter;
+  }
+  const schemaVersion = await store.schemaVersion();
+  const orthogonalIndexConsistent = endorsedIndexCount === endorsedCount;
+  return {
+    schemaVersion,
+    currentSchemaVersion: CURRENT_SCHEMA.version,
+    knowledgeCount,
+    missingOrthogonalStandings,
+    endorsedCount,
+    endorsedIndexCount,
+    legacyCanonCount,
+    epistemicUnknownCount,
+    orthogonalIndexConsistent,
+    migrationReady: schemaVersion === CURRENT_SCHEMA.version && missingOrthogonalStandings === 0 && orthogonalIndexConsistent
+  };
+}
 
 // src/adapters/web-audio/normalize.ts
 async function normalizeToCanonicalWav(input, createContext, options = {}) {
@@ -4025,6 +4325,120 @@ function territoryLabel(territory) {
   return TERRITORY_LABELS[territory] ?? territory;
 }
 
+// src/web/adr011-physical-probe.ts
+var ADR011_PHYSICAL_PROBE_DB = "alchemy-adr011-physical-migration-probe";
+var SUBJECT = "adr011-physical-probe-subject";
+var IDS = ["adr011-probe-canon", "adr011-probe-validated", "adr011-probe-explicit"];
+function legacy(id, stage, createdAt, extra = {}) {
+  return {
+    id,
+    subject: SUBJECT,
+    subjectKind: "entity",
+    kind: "curated-conclusion",
+    stage,
+    payload: { probe: "ADR-011 physical Safari migration", id },
+    agentId: "adr011-probe-agent",
+    agentVersion: "1",
+    evidence: [],
+    confidence: null,
+    schemaVersion: 1,
+    createdAt,
+    supersedes: null,
+    ...extra
+  };
+}
+function idb(factory) {
+  const resolved = factory ?? globalThis.indexedDB;
+  if (!resolved) throw new Error("IndexedDB is not available");
+  return resolved;
+}
+function deleteDatabase(name, factory) {
+  const req = idb(factory).deleteDatabase(name);
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error ?? new Error("could not delete probe database"));
+    req.onblocked = () => reject(new Error("probe database deletion blocked by an open connection"));
+  });
+}
+async function seedLegacyCorpus(databaseName, factory) {
+  const store = await IndexedDbRecordStore.open(databaseName, SCHEMA_V1, idb(factory));
+  try {
+    await store.commit([
+      {
+        op: "put",
+        collection: COLLECTIONS.knowledge,
+        record: legacy("adr011-probe-canon", "canon", 1)
+      },
+      {
+        op: "put",
+        collection: COLLECTIONS.knowledge,
+        record: legacy("adr011-probe-validated", "validated", 2)
+      },
+      {
+        op: "put",
+        collection: COLLECTIONS.knowledge,
+        record: legacy("adr011-probe-explicit", "canon", 3, {
+          epistemicStanding: "hypothesis",
+          institutionalStanding: "endorsed"
+        })
+      }
+    ]);
+    await store.setSchemaVersion(1);
+  } finally {
+    await store.close();
+  }
+}
+async function inspectMigratedCorpus(databaseName, factory) {
+  const store = await IndexedDbRecordStore.open(databaseName, CURRENT_SCHEMA, idb(factory));
+  try {
+    await migrate(store);
+    const records = await Promise.all(
+      IDS.map((recordId) => store.get(COLLECTIONS.knowledge, recordId))
+    );
+    const [canon, validated, explicit] = records;
+    const recordIdsPreserved = records.every((record, index) => record?.id === IDS[index]);
+    const endorsed = await store.lookup({
+      collection: COLLECTIONS.knowledge,
+      index: "kno_by_subject_institutional",
+      prefix: [SUBJECT, "endorsed"],
+      limit: 20
+    });
+    const endorsedIds = endorsed.items.map((record) => record.id);
+    const diagnostics = await collectPersistenceDiagnostics(store);
+    const legacyCanonBecameEndorsedUnknown = canon?.epistemicStanding === "unknown" && canon.institutionalStanding === "endorsed";
+    const validatedRemainedUnendorsed = validated?.epistemicStanding === "validated" && validated.institutionalStanding === "unendorsed";
+    const explicitOrthogonalStatePreserved = explicit?.epistemicStanding === "hypothesis" && explicit.institutionalStanding === "endorsed";
+    const endorsementIndexConsistent = diagnostics.orthogonalIndexConsistent && endorsedIds.includes("adr011-probe-canon") && endorsedIds.includes("adr011-probe-explicit") && !endorsedIds.includes("adr011-probe-validated");
+    const ok = diagnostics.schemaVersion === CURRENT_SCHEMA.version && recordIdsPreserved && legacyCanonBecameEndorsedUnknown && validatedRemainedUnendorsed && explicitOrthogonalStatePreserved && endorsementIndexConsistent && diagnostics.migrationReady;
+    return {
+      ok,
+      databaseName,
+      schemaVersion: diagnostics.schemaVersion,
+      currentSchemaVersion: CURRENT_SCHEMA.version,
+      recordIdsPreserved,
+      legacyCanonBecameEndorsedUnknown,
+      validatedRemainedUnendorsed,
+      explicitOrthogonalStatePreserved,
+      endorsementIndexConsistent,
+      migrationReady: diagnostics.migrationReady,
+      diagnostics
+    };
+  } finally {
+    await store.close();
+  }
+}
+async function prepareAdr011PhysicalMigrationProbe(databaseName = ADR011_PHYSICAL_PROBE_DB, factory) {
+  await deleteDatabase(databaseName, factory);
+  await seedLegacyCorpus(databaseName, factory);
+  return inspectMigratedCorpus(databaseName, factory);
+}
+async function verifyAdr011PhysicalMigrationProbe(databaseName = ADR011_PHYSICAL_PROBE_DB, factory) {
+  return inspectMigratedCorpus(databaseName, factory);
+}
+async function cleanupAdr011PhysicalMigrationProbe(databaseName = ADR011_PHYSICAL_PROBE_DB, factory) {
+  await deleteDatabase(databaseName, factory);
+}
+
 // src/web/lab.ts
 var DEFAULT_INTENT = "Exploraci\xF3n libre";
 var LINEAGE_REGISTRY_KEY = "alchemy.lineage-palette.v1";
@@ -4051,9 +4465,7 @@ var LocalStorageLineageStore = class {
 };
 async function openWebLab() {
   const records = await IndexedDbRecordStore.open("alchemy-records", CURRENT_SCHEMA);
-  if (await records.schemaVersion() < CURRENT_SCHEMA.version) {
-    await records.setSchemaVersion(CURRENT_SCHEMA.version);
-  }
+  await migrate(records);
   const content = await IndexedDbContentStore.open("alchemy-content");
   const registry = new DataRegistry();
   registerAlchemyVocabulary(registry);
@@ -4084,6 +4496,12 @@ async function openWebLab() {
   };
   return {
     recorderCapability: detectRecorderCapability(),
+    async persistenceDiagnostics() {
+      return collectPersistenceDiagnostics(records);
+    },
+    prepareAdr011PhysicalMigrationProbe,
+    verifyAdr011PhysicalMigrationProbe,
+    cleanupAdr011PhysicalMigrationProbe,
     explorationConfiguration: {
       id: DEFAULT_FRAGMENT_EXPLORATION.id,
       version: DEFAULT_FRAGMENT_EXPLORATION.version
