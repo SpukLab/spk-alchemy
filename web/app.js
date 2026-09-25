@@ -856,6 +856,39 @@ async function collectDiagnostics() {
   rows.push(['Configuración de exploración', {
     value: cfg ? `${cfg.id}@${cfg.version}` : 'no iniciada', ok: !!cfg }]);
   rows.push(['Almacenamiento', { value: state.lab ? 'IndexedDB (local)' : 'no iniciado', ok: !!state.lab }]);
+
+  if (state.lab?.persistenceDiagnostics) {
+    try {
+      const p = await state.lab.persistenceDiagnostics();
+      rows.push(['Schema Knowledge', {
+        value: `${p.schemaVersion} / ${p.currentSchemaVersion}`,
+        ok: p.schemaVersion === p.currentSchemaVersion,
+      }]);
+      rows.push(['Migración Knowledge V2', {
+        value: p.migrationReady ? 'correcta' : 'requiere revisión',
+        ok: p.migrationReady,
+      }]);
+      rows.push(['Knowledge persistido', { value: String(p.knowledgeCount), ok: true }]);
+      rows.push(['Registros sin standing ortogonal', {
+        value: String(p.missingOrthogonalStandings),
+        ok: p.missingOrthogonalStandings === 0,
+      }]);
+      rows.push(['Índice de endorsement', {
+        value: `${p.endorsedIndexCount} indexados / ${p.endorsedCount} observados`,
+        ok: p.orthogonalIndexConsistent,
+      }]);
+      rows.push(['Canon legado / epistemic unknown', {
+        value: `${p.legacyCanonCount} / ${p.epistemicUnknownCount}`,
+        ok: true,
+      }]);
+    } catch (err) {
+      rows.push(['Migración Knowledge V2', {
+        value: `error: ${err?.message || String(err)}`,
+        ok: false,
+      }]);
+    }
+  }
+
   rows.push(['Modo standalone', yes(window.navigator.standalone === true
     || window.matchMedia?.('(display-mode: standalone)').matches)]);
 
