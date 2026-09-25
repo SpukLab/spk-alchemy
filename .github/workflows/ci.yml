@@ -27,3 +27,48 @@ jobs:
 
       - name: Build web
         run: npm run build:web
+
+  deploy-web:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Build deployable web artifact
+        working-directory: source
+        run: |
+          npm ci
+          npm run build:web
+
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: publish
+
+      - name: Publish dist to gh-pages
+        run: |
+          git -C publish rm -r .
+          cp -a source/dist/. publish/
+          git -C publish add -A
+          if git -C publish diff --cached --quiet; then
+            echo "gh-pages already matches this build"
+            exit 0
+          fi
+          git -C publish config user.name "github-actions[bot]"
+          git -C publish config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C publish commit -m "deploy: Alchemy web app from ${GITHUB_SHA::7}"
+          git -C publish push origin gh-pages
