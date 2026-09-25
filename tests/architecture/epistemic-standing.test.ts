@@ -171,3 +171,40 @@ test('ADR-011: legacy stage=canon remains readable without inventing epistemic c
     'legacy canon cannot be backfilled as validated/durable without evidence');
   await l.records.close();
 });
+
+
+test('ADR-011: repeated standing edges remain distinct events after regression', async () => {
+  const l = await lab();
+  const record = await l.service.assertEpistemicRecord({
+    subject: l.source.id,
+    kind: KNOWLEDGE_KIND.curatedConclusion,
+    epistemicStanding: 'hypothesis',
+    payload: { note: 'repeatable transition history' },
+    agentId: l.artist.id,
+  });
+
+  await l.service.transitionKnowledgeEpistemicStanding(
+    record.id, 'validated', l.artist.id, 'first validation');
+  await l.service.transitionKnowledgeEpistemicStanding(
+    record.id, 'hypothesis', l.artist.id, 'new contradiction');
+  await l.service.transitionKnowledgeEpistemicStanding(
+    record.id, 'validated', l.artist.id, 'revalidated');
+
+  const transitions = await l.queries.transitionsFor(record.id);
+  assert.equal(transitions.length, 3);
+  assert.deepEqual(
+    transitions.map((t) => [t.fromState, t.toState]),
+    [
+      ['hypothesis', 'validated'],
+      ['validated', 'hypothesis'],
+      ['hypothesis', 'validated'],
+    ],
+    'a later legitimate transition must not be deduplicated against older history',
+  );
+  assert.equal(
+    new Set(transitions.map((t) => t.idempotencyKey)).size,
+    3,
+    'each historical occurrence has distinct event identity',
+  );
+  await l.records.close();
+});
