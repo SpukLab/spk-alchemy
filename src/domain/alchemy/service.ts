@@ -319,15 +319,19 @@ export class AlchemyService {
       epistemicStanding: to,
       institutionalStanding: institutional,
     };
+    const transitionId = newUuid();
     const transition: Transition = {
-      id: newUuid(),
+      id: transitionId,
       subject: current.id,
       kind: 'knowledge-epistemic-standing',
       fromState: from,
       toState: to,
       agentId: agent.id,
+      // The same semantic edge may legitimately recur after a regression.
+      // The whole Knowledge+Transition batch is atomic, so this event identity
+      // must be unique rather than collapsing later history into an old event.
       idempotencyKey: idempotencyKey(
-        'knowledge-epistemic-standing', current.id, from, to),
+        'knowledge-epistemic-standing', current.id, transitionId),
       rationale: rationale ?? null,
       context: {
         dimension: 'epistemic',
@@ -373,15 +377,18 @@ export class AlchemyService {
       epistemicStanding: epistemic,
       institutionalStanding: to,
     };
+    const transitionId = newUuid();
     const transition: Transition = {
-      id: newUuid(),
+      id: transitionId,
       subject: current.id,
       kind: 'knowledge-institutional-standing',
       fromState: from,
       toState: to,
       agentId: agent.id,
+      // Endorsement may be withdrawn and later granted again; preserve each
+      // occurrence as a distinct EVENT instead of deduplicating history.
       idempotencyKey: idempotencyKey(
-        'knowledge-institutional-standing', current.id, from, to),
+        'knowledge-institutional-standing', current.id, transitionId),
       rationale: rationale ?? null,
       context: {
         dimension: 'institutional',
