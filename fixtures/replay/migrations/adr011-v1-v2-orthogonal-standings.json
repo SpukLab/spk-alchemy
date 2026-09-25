@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "name": "adr011_v1_to_v2_orthogonal_standings",
+  "provenance": {
+    "source": "ADR-011 migration test corpus aligned with the physical Safari/iPhone probe",
+    "physical_evidence_build": "bceebff679a4037cddd83547e0cf3035fc2b6ff9",
+    "physical_result": "V1 -> V2 + real reload PASS",
+    "note": "This golden fixture freezes the deterministic migration projection only; it does not replace physical IndexedDB/Safari evidence."
+  },
+  "input": {
+    "schemaVersion": 1,
+    "legacyRecords": [
+      {
+        "id": "replay-canon",
+        "subject": "pattern002-migration-subject",
+        "subjectKind": "entity",
+        "kind": "curated-conclusion",
+        "stage": "canon",
+        "payload": {
+          "note": "legacy canon with unknown independent epistemic standing"
+        },
+        "agentId": "pattern002-agent",
+        "agentVersion": "1",
+        "evidence": [],
+        "confidence": null,
+        "schemaVersion": 1,
+        "createdAt": 1,
+        "supersedes": null
+      },
+      {
+        "id": "replay-validated",
+        "subject": "pattern002-migration-subject",
+        "subjectKind": "entity",
+        "kind": "curated-conclusion",
+        "stage": "validated",
+        "payload": {
+          "note": "legacy validated"
+        },
+        "agentId": "pattern002-agent",
+        "agentVersion": "1",
+        "evidence": [],
+        "confidence": null,
+        "schemaVersion": 1,
+        "createdAt": 2,
+        "supersedes": null
+      },
+      {
+        "id": "replay-observation",
+        "subject": "pattern002-migration-subject",
+        "subjectKind": "entity",
+        "kind": "curated-conclusion",
+        "stage": "observation",
+        "payload": {
+          "note": "legacy observation"
+        },
+        "agentId": "pattern002-agent",
+        "agentVersion": "1",
+        "evidence": [],
+        "confidence": null,
+        "schemaVersion": 1,
+        "createdAt": 3,
+        "supersedes": null
+      },
+      {
+        "id": "replay-explicit",
+        "subject": "pattern002-migration-subject",
+        "subjectKind": "entity",
+        "kind": "curated-conclusion",
+        "stage": "canon",
+        "payload": {
+          "note": "explicit orthogonal state predates migration"
+        },
+        "agentId": "pattern002-agent",
+        "agentVersion": "1",
+        "evidence": [],
+        "confidence": null,
+        "schemaVersion": 1,
+        "createdAt": 4,
+        "supersedes": null,
+        "epistemicStanding": "hypothesis",
+        "institutionalStanding": "endorsed"
+      }
+    ]
+  },
+  "expected": {
+    "schemaVersion": 2,
+    "records": [
+      {
+        "id": "replay-canon",
+        "subject": "pattern002-migration-subject",
+        "subjectKind": "entity",
+        "kind": "curated-conclusion",
+        "stage": "canon",
+        "payload": {
+          "note": "legacy canon with unknown independent epistemic standing"
+        },
+        "agentId": "pattern002-agent",
+        "agentVersion": "1",
+        "evidence": [],
+        "confidence": null,
+        "schemaVersion": 1,
+        "createdAt": 1,
+        "supersedes": null,
+        "epistemicStanding": "unknown",
+        "institutionalStanding": "endorsed"
+      },
+      {
+        "id": "replay-explicit",
+        "subject": "pattern002-migration-subject",
+        "subjectKind": "entity",
+        "kind": "curated-conclusion",
+        "stage": "canon",
+        "payload": {
+          "note": "explicit orthogonal state predates migration"
+        },
+        "agentId": "pattern002-agent",
+        "agentVersion": "1",
+        "evidence": [],
+        "confidence": null,
+        "schemaVersion": 1,
+        "createdAt": 4,
+        "supersedes": null,
+        "epistemicStanding": "hypothesis",
+        "institutionalStanding": "endorsed"
+      },
+      {
+        "id": "replay-observation",
+        "subject": "pattern002-migration-subject",
+        "subjectKind": "entity",
+        "kind": "curated-conclusion",
+        "stage": "observation",
+        "payload": {
+          "note": "legacy observation"
+        },
+        "agentId": "pattern002-agent",
+        "agentVersion": "1",
+        "evidence": [],
+        "confidence": null,
+        "schemaVersion": 1,
+        "createdAt": 3,
+        "supersedes": null,
+        "epistemicStanding": "observation",
+        "institutionalStanding": "unendorsed"
+      },
+      {
+        "id": "replay-validated",
+        "subject": "pattern002-migration-subject",
+        "subjectKind": "entity",
+        "kind": "curated-conclusion",
+        "stage": "validated",
+        "payload": {
+          "note": "legacy validated"
+        },
+        "agentId": "pattern002-agent",
+        "agentVersion": "1",
+        "evidence": [],
+        "confidence": null,
+        "schemaVersion": 1,
+        "createdAt": 2,
+        "supersedes": null,
+        "epistemicStanding": "validated",
+        "institutionalStanding": "unendorsed"
+      }
+    ],
+    "endorsedIds": [
+      "replay-canon",
+      "replay-explicit"
+    ],
+    "validatedIds": [
+      "replay-validated"
+    ],
+    "diagnostics": {
+      "schemaVersion": 2,
+      "currentSchemaVersion": 2,
+      "knowledgeCount": 4,
+      "missingOrthogonalStandings": 0,
+      "endorsedCount": 2,
+      "endorsedIndexCount": 2,
+      "legacyCanonCount": 2,
+      "epistemicUnknownCount": 1,
+      "orthogonalIndexConsistent": true,
+      "migrationReady": true
+    }
+  }
+}
