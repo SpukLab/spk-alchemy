@@ -53,6 +53,26 @@ export const SCHEMA_V1: SchemaDeclaration = {
   ],
 };
 
+
+/**
+ * ADR-011 experimental schema.
+ *
+ * Keep the legacy stage index during migration while adding independent
+ * epistemic/institutional indexes. Removing the legacy index is a later
+ * compatibility decision, not part of this migration.
+ */
+export const SCHEMA_V2: SchemaDeclaration = {
+  version: 2,
+  collections: SCHEMA_V1.collections,
+  indexes: [
+    ...SCHEMA_V1.indexes,
+    { name: 'kno_by_subject_epistemic', collection: COLLECTIONS.knowledge,
+      fields: ['subject', 'epistemicStanding', 'createdAt', 'id'] },
+    { name: 'kno_by_subject_institutional', collection: COLLECTIONS.knowledge,
+      fields: ['subject', 'institutionalStanding', 'createdAt', 'id'] },
+  ],
+};
+
 export function indexesFor(schema: SchemaDeclaration, collection: string): IndexDeclaration[] {
   return schema.indexes.filter((i) => i.collection === collection);
 }

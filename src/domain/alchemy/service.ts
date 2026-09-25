@@ -6,6 +6,7 @@ import type {
   EpistemicStanding, InstitutionalStanding,
 } from '../../core/primitives.ts';
 import { COLLECTIONS } from '../../core/primitives.ts';
+import { standingsFromLegacy, legacyStageProjection } from '../../core/epistemic-state.ts';
 import { newUuid, contentHash, idempotencyKey } from '../../core/ids.ts';
 import { DomainRuleError, IntegrityError, NotFoundError } from '../../core/errors.ts';
 import {
@@ -36,38 +37,6 @@ import {
 } from './mesa-relational.ts';
 
 const SCHEMA_VERSION = 1;
-
-function epistemicStandingFromLegacy(stage: Knowledge['stage']): EpistemicStanding {
-  switch (stage) {
-    case 'observation': return 'observation';
-    case 'hypothesis': return 'hypothesis';
-    case 'validated': return 'validated';
-    case 'deprecated': return 'deprecated';
-    case 'canon':
-      // Legacy canon encoded institutional endorsement but did not preserve
-      // the independent epistemic standing. Never invent it during migration.
-      return 'unknown';
-  }
-}
-
-function institutionalStandingFromLegacy(
-  stage: Knowledge['stage'],
-): InstitutionalStanding {
-  return stage === 'canon' ? 'endorsed' : 'unendorsed';
-}
-
-function legacyStageProjection(
-  epistemic: EpistemicStanding,
-  institutional: InstitutionalStanding,
-): Knowledge['stage'] {
-  // Existing queries/indexes still read stage='canon'. Preserve that projection
-  // while ADR-011 is experimental, without treating it as epistemic truth.
-  if (institutional === 'endorsed') return 'canon';
-  if (epistemic === 'deprecated') return 'deprecated';
-  if (epistemic === 'observation') return 'observation';
-  if (epistemic === 'hypothesis' || epistemic === 'unknown') return 'hypothesis';
-  return 'validated'; // validated and durable share the legacy projection.
-}
 
 /**
  * A Preview exists only in runtime. It has no canonical identity, is absent
@@ -242,8 +211,8 @@ export class AlchemyService {
     return this.assertEpistemicRecord({
       subject: input.subject,
       kind: input.kind,
-      epistemicStanding: epistemicStandingFromLegacy(input.stage),
-      institutionalStanding: institutionalStandingFromLegacy(input.stage),
+      epistemicStanding: standingsFromLegacy(input.stage).epistemic,
+      institutionalStanding: standingsFromLegacy(input.stage).institutional,
       payload: input.payload,
       agentId: input.agentId,
       confidence: input.confidence,
@@ -300,11 +269,11 @@ export class AlchemyService {
   ): Promise<{ knowledge: Knowledge; transition: Transition | null; changed: boolean }> {
     const agent = await this.#requireAgent(agentId);
     const current = await this.#requireKnowledge(knowledgeId);
-    const from = current.epistemicStanding ?? epistemicStandingFromLegacy(current.stage);
+    const from = current.epistemicStanding ?? standingsFromLegacy(current.stage).epistemic;
     if (from === to) return { knowledge: current, transition: null, changed: false };
 
     const institutional =
-      current.institutionalStanding ?? institutionalStandingFromLegacy(current.stage);
+      current.institutionalStanding ?? standingsFromLegacy(current.stage).institutional;
     const stage = legacyStageProjection(to, institutional);
     const def = this.#registry.knowledgeKind(current.kind);
     if (!def.allowedStages.includes(stage)) {
@@ -358,11 +327,11 @@ export class AlchemyService {
     const agent = await this.#requireAgent(agentId);
     const current = await this.#requireKnowledge(knowledgeId);
     const from =
-      current.institutionalStanding ?? institutionalStandingFromLegacy(current.stage);
+      current.institutionalStanding ?? standingsFromLegacy(current.stage).institutional;
     if (from === to) return { knowledge: current, transition: null, changed: false };
 
     const epistemic =
-      current.epistemicStanding ?? epistemicStandingFromLegacy(current.stage);
+      current.epistemicStanding ?? standingsFromLegacy(current.stage).epistemic;
     const stage = legacyStageProjection(epistemic, to);
     const def = this.#registry.knowledgeKind(current.kind);
     if (!def.allowedStages.includes(stage)) {

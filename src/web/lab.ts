@@ -5,7 +5,7 @@ import { registerAlchemyVocabulary, LIFECYCLE } from '../domain/alchemy/vocabula
 import { AlchemyService } from '../domain/alchemy/service.ts';
 import type { Preview } from '../domain/alchemy/service.ts';
 import { AlchemyQueries } from '../query/queries.ts';
-import { CURRENT_SCHEMA } from '../migrations/index.ts';
+import { CURRENT_SCHEMA, migrate } from '../migrations/index.ts';
 import { DEFAULT_FRAGMENT_EXPLORATION } from '../domain/alchemy/research-configuration.ts';
 import type { ResearchConfiguration } from '../domain/alchemy/research-configuration.ts';
 
@@ -126,9 +126,9 @@ class LocalStorageLineageStore implements LineageRegistryStore {
 
 export async function openWebLab(): Promise<WebLab> {
   const records = await IndexedDbRecordStore.open('alchemy-records', CURRENT_SCHEMA);
-  if ((await records.schemaVersion()) < CURRENT_SCHEMA.version) {
-    await records.setSchemaVersion(CURRENT_SCHEMA.version);
-  }
+  // Never advance the metadata version without executing the data migration.
+  // ADR-011 V2 must backfill and reindex legacy Knowledge before queries run.
+  await migrate(records);
   const content = await IndexedDbContentStore.open('alchemy-content');
   const registry = new DataRegistry();
   registerAlchemyVocabulary(registry);       // no View Registry: data valid without it
