@@ -825,8 +825,10 @@ function readAdr011ProbeState() {
 }
 
 function writeAdr011ProbeState(value) {
-  try { localStorage.setItem(ADR011_PROBE_STATE_KEY, JSON.stringify(value)); }
-  catch { /* diagnostics still work; only reload handoff is unavailable */ }
+  try {
+    localStorage.setItem(ADR011_PROBE_STATE_KEY, JSON.stringify(value));
+    return true;
+  } catch { return false; }
 }
 
 function renderAdr011ProbeStatus() {
@@ -838,6 +840,7 @@ function renderAdr011ProbeStatus() {
   if (saved.status === 'passed') {
     host.className = 'hint yes';
     host.textContent = 'PASS · corpus V1 migrado a V2 y legible después de recargar la página.';
+    if ($('adr011-probe')) $('adr011-probe').textContent = 'Repetir prueba física ADR-011';
   } else if (saved.status === 'failed') {
     host.className = 'hint no';
     host.textContent = `FAIL · ${saved.error || 'la verificación posterior a la recarga no pasó'}`;
@@ -855,12 +858,13 @@ async function beginAdr011PhysicalProbe() {
   try {
     const phase1 = await state.lab.prepareAdr011PhysicalMigrationProbe();
     if (!phase1.ok) throw new Error('la migración V1 → V2 no pasó la verificación previa');
-    writeAdr011ProbeState({
+    const handoffSaved = writeAdr011ProbeState({
       status: 'pending-reload',
       startedAt: new Date().toISOString(),
       userAgent: navigator.userAgent,
       phase1,
     });
+    if (!handoffSaved) throw new Error('Safari no permitió guardar el estado necesario para verificar después de recargar');
     renderAdr011ProbeStatus();
     // This real document reload is part of the acceptance gate. Verification
     // resumes in boot() and reopens the already-migrated IndexedDB database.
@@ -961,6 +965,9 @@ async function collectDiagnostics() {
         : 'pendiente de recarga',
       ok: physicalProbe.status === 'passed',
     }]);
+    if (physicalProbe.userAgent) {
+      rows.push(['Entorno prueba ADR-011', { value: physicalProbe.userAgent, ok: true }]);
+    }
   }
 
   if (state.lab?.persistenceDiagnostics) {
