@@ -163,11 +163,12 @@ test('migrations rebuild the store deterministically from zero', async () => {
   const path = join(dir, 'store.sqlite');
   const first = new SqliteRecordStore(path, CURRENT_SCHEMA);
   assert.equal(await first.schemaVersion(), 0, 'empty store starts at version 0');
-  assert.equal(await migrate(first), 1);
-  assert.equal(await migrate(first), 1, 'migration is idempotent');
+  assert.equal(await migrate(first), CURRENT_SCHEMA.version);
+  assert.equal(await migrate(first), CURRENT_SCHEMA.version, 'migration is idempotent');
   await first.close();
   await rm(path, { force: true });
   const rebuilt = new SqliteRecordStore(path, CURRENT_SCHEMA);
-  assert.equal(await migrate(rebuilt), 1, 'rebuild from an empty store reaches the same version');
+  assert.equal(await migrate(rebuilt), CURRENT_SCHEMA.version,
+    'rebuild from an empty store reaches the same current version');
   await rebuilt.close();
 });
