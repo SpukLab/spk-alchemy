@@ -125,10 +125,16 @@ export function registerAlchemyVocabulary(data: DataRegistry, view?: ViewRegistr
   data.registerRelationshipType({ type: REL.packagedMaterial,
     sourceTypes: [TYPE_DNA_PACK], targetTypes: [TYPE_AUDIO_MATERIAL] });
 
-  data.registerKnowledgeKind({ kind: KNOWLEDGE_KIND.physicalAnalysis,
-    allowedStages: ['observation', 'deprecated'] });
-  data.registerKnowledgeKind({ kind: KNOWLEDGE_KIND.curatedConclusion,
-    allowedStages: ['hypothesis', 'validated', 'canon', 'deprecated'] });
+  data.registerKnowledgeKind({
+    kind: KNOWLEDGE_KIND.physicalAnalysis,
+    allowedStages: ['observation', 'deprecated'],
+    allowedEpistemicStandings: ['unknown', 'observation', 'deprecated'],
+  });
+  data.registerKnowledgeKind({
+    kind: KNOWLEDGE_KIND.curatedConclusion,
+    allowedStages: ['hypothesis', 'validated', 'canon', 'deprecated'],
+    allowedEpistemicStandings: ['unknown', 'hypothesis', 'validated', 'durable', 'deprecated'],
+  });
 
   // Presentation is optional by contract; absence must never invalidate data.
   view?.register(TYPE_AUDIO_MATERIAL, { label: 'Material', group: 'Inventory' });
