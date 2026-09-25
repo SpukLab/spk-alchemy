@@ -813,6 +813,106 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 
+// ---- ADR-011 physical IndexedDB migration gate ----------------------------
+
+const ADR011_PROBE_STATE_KEY = 'alchemy:adr011-physical-probe-state-v1';
+
+function readAdr011ProbeState() {
+  try {
+    const raw = localStorage.getItem(ADR011_PROBE_STATE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function writeAdr011ProbeState(value) {
+  try {
+    localStorage.setItem(ADR011_PROBE_STATE_KEY, JSON.stringify(value));
+    return true;
+  } catch { return false; }
+}
+
+function renderAdr011ProbeStatus() {
+  const host = $('adr011-probe-result');
+  if (!host) return;
+  const saved = readAdr011ProbeState();
+  if (!saved) { host.hidden = true; return; }
+  host.hidden = false;
+  if (saved.status === 'passed') {
+    host.className = 'hint yes';
+    host.textContent = 'PASS · corpus V1 migrado a V2 y legible después de recargar la página.';
+    if ($('adr011-probe')) $('adr011-probe').textContent = 'Repetir prueba física ADR-011';
+  } else if (saved.status === 'failed') {
+    host.className = 'hint no';
+    host.textContent = `FAIL · ${saved.error || 'la verificación posterior a la recarga no pasó'}`;
+  } else {
+    host.className = 'hint';
+    host.textContent = 'Migración V1 → V2 completada. Verificando después de la recarga…';
+  }
+}
+
+async function beginAdr011PhysicalProbe() {
+  const button = $('adr011-probe');
+  if (!button || !state.lab?.prepareAdr011PhysicalMigrationProbe) return;
+  button.disabled = true;
+  button.textContent = 'Preparando corpus V1…';
+  try {
+    const phase1 = await state.lab.prepareAdr011PhysicalMigrationProbe();
+    if (!phase1.ok) throw new Error('la migración V1 → V2 no pasó la verificación previa');
+    const handoffSaved = writeAdr011ProbeState({
+      status: 'pending-reload',
+      startedAt: new Date().toISOString(),
+      userAgent: navigator.userAgent,
+      phase1,
+    });
+    if (!handoffSaved) throw new Error('Safari no permitió guardar el estado necesario para verificar después de recargar');
+    renderAdr011ProbeStatus();
+    // This real document reload is part of the acceptance gate. Verification
+    // resumes in boot() and reopens the already-migrated IndexedDB database.
+    location.reload();
+  } catch (err) {
+    writeAdr011ProbeState({
+      status: 'failed',
+      finishedAt: new Date().toISOString(),
+      userAgent: navigator.userAgent,
+      error: err?.message || String(err),
+    });
+    renderAdr011ProbeStatus();
+    button.disabled = false;
+    button.textContent = 'Repetir prueba física ADR-011';
+    await renderDiagnostics();
+  }
+}
+
+async function resumeAdr011PhysicalProbe() {
+  const saved = readAdr011ProbeState();
+  if (saved?.status !== 'pending-reload' || !state.lab?.verifyAdr011PhysicalMigrationProbe) {
+    renderAdr011ProbeStatus();
+    return;
+  }
+  try {
+    const phase2 = await state.lab.verifyAdr011PhysicalMigrationProbe();
+    if (!phase2.ok) throw new Error('el corpus migrado no conservó identidad/backfill/índices');
+    const completed = {
+      ...saved,
+      status: 'passed',
+      finishedAt: new Date().toISOString(),
+      phase2,
+    };
+    writeAdr011ProbeState(completed);
+    await state.lab.cleanupAdr011PhysicalMigrationProbe();
+  } catch (err) {
+    writeAdr011ProbeState({
+      ...saved,
+      status: 'failed',
+      finishedAt: new Date().toISOString(),
+      error: err?.message || String(err),
+    });
+  }
+  renderAdr011ProbeStatus();
+  await renderDiagnostics();
+  $('diag-toggle').textContent = 'Ocultar compatibilidad';
+}
+
 // ---- device diagnostics ----------------------------------------------------
 
 /**
@@ -856,6 +956,19 @@ async function collectDiagnostics() {
   rows.push(['Configuración de exploración', {
     value: cfg ? `${cfg.id}@${cfg.version}` : 'no iniciada', ok: !!cfg }]);
   rows.push(['Almacenamiento', { value: state.lab ? 'IndexedDB (local)' : 'no iniciado', ok: !!state.lab }]);
+
+  const physicalProbe = readAdr011ProbeState();
+  if (physicalProbe) {
+    rows.push(['ADR-011 V1 → V2 + recarga', {
+      value: physicalProbe.status === 'passed' ? 'PASS'
+        : physicalProbe.status === 'failed' ? `FAIL · ${physicalProbe.error || 'verificación'}`
+        : 'pendiente de recarga',
+      ok: physicalProbe.status === 'passed',
+    }]);
+    if (physicalProbe.userAgent) {
+      rows.push(['Entorno prueba ADR-011', { value: physicalProbe.userAgent, ok: true }]);
+    }
+  }
 
   if (state.lab?.persistenceDiagnostics) {
     try {
@@ -986,6 +1099,8 @@ function wire() {
     await renderDiagnostics();
     $('diag-toggle').textContent = 'Ocultar compatibilidad';
   };
+  if ($('adr011-probe')) $('adr011-probe').onclick = beginAdr011PhysicalProbe;
+  renderAdr011ProbeStatus();
 
   $('previews').onclick = (e) => {
     const keep = e.target.dataset?.keep;
@@ -1126,6 +1241,7 @@ async function boot() {
     initMesaSliders();
     initConditioningControls();
     $('guest-influence').value = String(state.lab.defaultGuestInfluence);
+    await resumeAdr011PhysicalProbe();
 
     // Capture may be impossible on this device or over http://. Explain it up
     // front rather than letting the record button fail silently.

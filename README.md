@@ -71,7 +71,13 @@ sites it considers unused.
 The **Dispositivo** section reports what this particular Safari supports:
 secure context, IndexedDB, `getUserMedia`, `MediaRecorder`, the recording MIME
 types it actually accepts, audio decoding, the active storage adapter and the
-build id. That is the information worth reporting back when something fails.
+build id. It also contains the **ADR-011 V1 → V2 + reload** physical migration
+probe. That probe uses a separate IndexedDB database, never the artist's corpus:
+it creates a genuine V1 legacy corpus, upgrades it through the production V2
+migration path, reloads the document, then reopens and verifies identity,
+backfill and endorsement indexes. That is the physical Safari/iPhone acceptance
+gate; the Node test only validates the same probe logic in a spec-compatible
+IndexedDB environment.
 
 ## iPhone web app
 
@@ -149,8 +155,7 @@ reference, not a normative ADR.
 
 Structural primitives: **Entity, Relationship, Knowledge, Transition, Agent**.
 Research Intent, Canonical Grouping and Published Artifact are canonical *types*
-built from those primitives, never additional root structures. Canon is a query
-over Knowledge whose epistemic stage is `canon` — there is no Canon store.
+built from those primitives, never additional root structures. Persisted claim-bearing records may remain Epistemic Records before they achieve constitutional Knowledge standing. The Epistemic Canon is a query over records whose institutional standing is `endorsed`; legacy `stage='canon'` is compatibility only. There is no Canon store.
 
 ## Material identity
 
