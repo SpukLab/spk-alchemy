@@ -57,9 +57,9 @@ export interface WebLab {
   /** Creates and migrates an isolated real IndexedDB V1 corpus. Caller must then reload. */
   prepareAdr011PhysicalMigrationProbe(): Promise<Adr011PhysicalProbeResult>;
   /** Reopens the migrated probe after reload and verifies identity/backfill/indexes. */
-  verifyAdr011PhysicalMigrationProbe(): Promise<Adr011PhysicalProbeResult>;
-  /** Removes only the dedicated ADR-011 probe database. */
-  cleanupAdr011PhysicalMigrationProbe(): Promise<void>;
+  verifyAdr011PhysicalMigrationProbe(databaseName: string): Promise<Adr011PhysicalProbeResult>;
+  /** Removes only the dedicated ADR-011 probe database. Cleanup is best-effort. */
+  cleanupAdr011PhysicalMigrationProbe(databaseName: string): Promise<boolean>;
   /** Which exploration configuration new explorations currently use. */
   explorationConfiguration: Pick<ResearchConfiguration, 'id' | 'version'>;
   // Family / DNA Pack curation
