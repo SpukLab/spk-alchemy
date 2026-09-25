@@ -20,7 +20,8 @@ async function lab() {
   const content = new FsContentStore(join(dir, 'content'));
   const data = new DataRegistry();
   registerAlchemyVocabulary(data);
-  const service = new AlchemyService(records, content, data);
+  let clock = 10_000;
+  const service = new AlchemyService(records, content, data, () => ++clock);
   const queries = new AlchemyQueries(records, content);
   const artist = await service.registerAgent({ kind: 'human', name: 'artist', version: '1' });
   const source = await service.importMaterial({
