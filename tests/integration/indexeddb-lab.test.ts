@@ -7,7 +7,7 @@ import { DataRegistry } from '../../src/registries/data-registry.ts';
 import { registerAlchemyVocabulary, LIFECYCLE } from '../../src/domain/alchemy/vocabulary.ts';
 import { AlchemyService } from '../../src/domain/alchemy/service.ts';
 import { AlchemyQueries } from '../../src/query/queries.ts';
-import { CURRENT_SCHEMA } from '../../src/migrations/index.ts';
+import { CURRENT_SCHEMA, migrate } from '../../src/migrations/index.ts';
 import { FRAGMENT_EXPLORATION_V1 } from '../../src/domain/alchemy/research-configuration.ts';
 import { selectVariation } from '../../src/domain/alchemy/exploration.ts';
 import { synthesize, encodeWav } from '../../src/audio/wav.ts';
@@ -22,7 +22,7 @@ let n = 0;
 async function lab() {
   n += 1;
   const records = await IndexedDbRecordStore.open(`lab-records-${n}-${Date.now()}`, CURRENT_SCHEMA);
-  await records.setSchemaVersion(CURRENT_SCHEMA.version);
+  await migrate(records);
   const content = await IndexedDbContentStore.open(`lab-content-${n}-${Date.now()}`);
   const registry = new DataRegistry();
   registerAlchemyVocabulary(registry);
