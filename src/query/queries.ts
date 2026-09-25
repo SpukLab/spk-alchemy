@@ -144,11 +144,15 @@ export class AlchemyQueries {
     });
   }
 
-  /** Q9. Canon is a view over Knowledge, never a separate store. */
+  /**
+   * Q9. Epistemic Canon is an institutional view over the same Knowledge
+   * collection, never a separate store. ADR-011: endorsement is independent
+   * from epistemic standing.
+   */
   async canonKnowledgeForSubject(subjectId: string, limit = 100): Promise<Knowledge[]> {
     const page = await this.#records.lookup({
-      collection: COLLECTIONS.knowledge, index: 'kno_by_subject_stage',
-      prefix: [subjectId, 'canon'], limit,
+      collection: COLLECTIONS.knowledge, index: 'kno_by_subject_institutional',
+      prefix: [subjectId, 'endorsed'], limit,
     });
     return page.items as unknown as Knowledge[];
   }
